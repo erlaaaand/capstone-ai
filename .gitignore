@@ -3,11 +3,14 @@
 venv/
 env/
 
+ai/
+
 data/raw/
 data/processed/
 *.zip
 
 models/weights/
+models/evaluation/
 *.h5
 *.onnx
 *.pt

@@ -1,15 +1,3 @@
-"""
-Standalone evaluation script untuk Durian Classification Model.
-
-Load model Keras (.keras atau .h5), evaluasi terhadap test/valid dataset,
-hasilkan classification report dan confusion matrix.
-
-Konsisten dengan pipeline training:
-  - EfficientNetB0 dengan two-phase training
-  - Input pixel [0, 255] float32 (normalisasi built-in di backbone)
-  - 8 kelas: D101, D13, D197, D198, D2, D200, D24, D88
-"""
-
 import argparse
 import sys
 from pathlib import Path
@@ -20,7 +8,6 @@ import seaborn as sns
 import tensorflow as tf
 from sklearn.metrics import classification_report, confusion_matrix
 
-# Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
@@ -35,15 +22,6 @@ def plot_confusion_matrix(
     output_path: Path,
     normalize: bool = True,
 ) -> None:
-    """
-    Plot dan simpan confusion matrix.
-
-    Args:
-        cm: Confusion matrix array.
-        class_names: Nama kelas.
-        output_path: Path simpan gambar.
-        normalize: Jika True, tampilkan sebagai proporsi (0.0–1.0).
-    """
     if normalize:
         cm_plot = cm.astype(float) / (cm.sum(axis=1, keepdims=True) + 1e-8)
         fmt, title = ".2f", "Normalized Confusion Matrix"
@@ -84,16 +62,6 @@ def evaluate_model(
     use_tta: bool = False,
     n_tta: int = 3,
 ) -> None:
-    """
-    Load model Keras dan evaluasi terhadap dataset.
-
-    Args:
-        model_path: Path ke model Keras (.keras atau .h5).
-        test_data_dir: Path ke folder gambar test (subfolder = kelas).
-        batch_size: Batch size inferensi.
-        use_tta: Jika True, gunakan Test-Time Augmentation.
-        n_tta: Jumlah augmentasi TTA (aktif jika use_tta=True).
-    """
     model_file = Path(model_path)
     if not model_file.is_absolute():
         model_file = PROJECT_ROOT / model_path
@@ -102,7 +70,6 @@ def evaluate_model(
     if not test_dir.is_absolute():
         test_dir = PROJECT_ROOT / test_data_dir
 
-    # ── Validasi path ─────────────────────────────────────────────────────────
     if not model_file.exists():
         logger.error(f"Model tidak ditemukan: {model_file}")
         sys.exit(1)
@@ -110,7 +77,6 @@ def evaluate_model(
         logger.error(f"Folder test tidak ditemukan: {test_dir}")
         sys.exit(1)
 
-    # ── Load model ────────────────────────────────────────────────────────────
     logger.info(f"Loading model dari: {model_file}")
     try:
         model = tf.keras.models.load_model(str(model_file))
@@ -119,7 +85,6 @@ def evaluate_model(
         logger.error(f"Gagal load model: {str(e)}")
         sys.exit(1)
 
-    # ── Load dataset ──────────────────────────────────────────────────────────
     logger.info(f"Loading dataset dari: {test_dir}")
     try:
         test_ds = tf.keras.utils.image_dataset_from_directory(
@@ -129,7 +94,7 @@ def evaluate_model(
             color_mode="rgb",
             batch_size=batch_size,
             image_size=(224, 224),
-            shuffle=False,   # WAJIB False agar label selaras dengan prediksi
+            shuffle=False,
         )
     except Exception as e:
         logger.error(f"Gagal load dataset: {str(e)}")
@@ -138,17 +103,14 @@ def evaluate_model(
     class_names = test_ds.class_names
     logger.info(f"Kelas ditemukan ({len(class_names)}): {class_names}")
 
-    # ── Optimasi pipeline ─────────────────────────────────────────────────────
     AUTOTUNE = tf.data.AUTOTUNE
     test_ds  = test_ds.cache().prefetch(AUTOTUNE)
 
-    # ── Kumpulkan true labels ─────────────────────────────────────────────────
     logger.info("Mengumpulkan true labels...")
     true_labels = np.concatenate([
         np.argmax(labels.numpy(), axis=1) for _, labels in test_ds
     ])
 
-    # ── Prediksi ──────────────────────────────────────────────────────────────
     if use_tta:
         logger.info(f"Menjalankan prediksi dengan TTA (n={n_tta})...")
         tta_aug = tf.keras.Sequential([
@@ -173,7 +135,6 @@ def evaluate_model(
 
     pred_labels = np.argmax(predictions, axis=1)
 
-    # ── Classification Report ─────────────────────────────────────────────────
     overall_acc = np.mean(true_labels == pred_labels)
     logger.info("=" * 65)
     logger.info("  CLASSIFICATION REPORT")
@@ -192,26 +153,22 @@ def evaluate_model(
             logger.info(line)
     logger.info("=" * 65)
 
-    # ── Simpan grafik ─────────────────────────────────────────────────────────
     plot_dir = PROJECT_ROOT / "models" / "evaluation"
     plot_dir.mkdir(parents=True, exist_ok=True)
 
     cm = confusion_matrix(true_labels, pred_labels)
 
-    # Normalized
     plot_confusion_matrix(
         cm, class_names,
         output_path=plot_dir / "confusion_matrix_normalized.png",
         normalize=True,
     )
-    # Raw counts
     plot_confusion_matrix(
         cm, class_names,
         output_path=plot_dir / "confusion_matrix_counts.png",
         normalize=False,
     )
 
-    # Per-class accuracy bar chart
     per_class_acc = cm.diagonal() / (cm.sum(axis=1) + 1e-8)
     plt.figure(figsize=(max(10, len(class_names) * 1.5), 5))
     bars = plt.bar(class_names, per_class_acc * 100, color="steelblue", edgecolor="white")
@@ -235,14 +192,13 @@ def evaluate_model(
 
 
 def main() -> None:
-    """Execute evaluation pipeline."""
     parser = argparse.ArgumentParser(
         description="Evaluasi Durian Classification Model"
     )
     parser.add_argument(
         "--model",
         type=str,
-        default="models/weights/best_model.keras",    # .keras (Keras 3.x native)
+        default="models/weights/best_model.keras",
         help="Path ke trained Keras model (.keras atau .h5)",
     )
     parser.add_argument(

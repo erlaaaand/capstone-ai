@@ -1,16 +1,10 @@
-"""
-Image processing service for the Durian Classification API.
-
-Handles decoding, resizing, and normalizing images (from bytes or Base64)
-to match the exact input requirements of the EfficientNetB0 ONNX model.
-"""
-
 import base64
 import io
-from typing import Union
+import time
+from typing import Tuple, Union
 
 import numpy as np
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageFilter, UnidentifiedImageError
 
 from core.config import settings
 from core.exceptions import ImageProcessingException, InvalidImageException
@@ -19,128 +13,152 @@ from core.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _auto_white_balance(arr: np.ndarray) -> np.ndarray:
+    means = arr.mean(axis=(0, 1))
+    if np.any(means < 1e-6):
+        return arr
+    gray  = means.mean()
+    scale = gray / (means + 1e-8)
+    result = np.clip(arr * scale[np.newaxis, np.newaxis, :], 0, 255)
+    return result
+
+
+def _apply_clahe(arr: np.ndarray, clip_limit: float = 2.0) -> np.ndarray:
+    pil      = Image.fromarray(arr.astype(np.uint8), mode="RGB")
+    ycbcr    = pil.convert("YCbCr")
+    y, cb, cr = ycbcr.split()
+
+    y_arr    = np.array(y, dtype=np.float32)
+    hist, _  = np.histogram(y_arr.flatten(), bins=256, range=(0, 256))
+    cdf      = hist.cumsum().astype(np.float64)
+    cdf_norm = (cdf - cdf.min()) / (cdf.max() - cdf.min() + 1e-8) * 255.0
+    y_eq     = cdf_norm[y_arr.astype(np.int32).clip(0, 255)]
+
+    alpha    = min(clip_limit / 4.0, 1.0) * 0.40
+    y_new    = np.clip((1 - alpha) * y_arr + alpha * y_eq, 0, 255).astype(np.uint8)
+
+    merged   = Image.merge("YCbCr", (Image.fromarray(y_new, "L"), cb, cr)).convert("RGB")
+    return np.array(merged, dtype=np.float32)
+
+
+def _unsharp_mask(arr: np.ndarray, radius: int = 2, amount: float = 0.45) -> np.ndarray:
+    pil      = Image.fromarray(arr.astype(np.uint8))
+    blurred  = np.array(pil.filter(ImageFilter.GaussianBlur(radius=radius)), dtype=np.float32)
+    sharpened = arr + amount * (arr - blurred)
+    return np.clip(sharpened, 0, 255)
+
+
+def enhance_image(arr: np.ndarray) -> np.ndarray:
+    if settings.ENABLE_WHITE_BALANCE:
+        arr = _auto_white_balance(arr)
+    if settings.ENABLE_CLAHE:
+        arr = _apply_clahe(arr, clip_limit=settings.CLAHE_CLIP_LIMIT)
+    if settings.ENABLE_SHARPENING:
+        arr = _unsharp_mask(arr)
+    return arr
+
+
+def _letterbox_resize(
+    image: Image.Image,
+    target: Tuple[int, int],
+    pad_color: Tuple[int, int, int] = (114, 114, 114),
+) -> Image.Image:
+    tw, th   = target
+    ow, oh   = image.size
+    scale    = min(tw / ow, th / oh)
+    nw, nh   = int(round(ow * scale)), int(round(oh * scale))
+
+    resized  = image.resize((nw, nh), Image.Resampling.LANCZOS)
+    canvas   = Image.new("RGB", target, color=pad_color)
+    canvas.paste(resized, ((tw - nw) // 2, (th - nh) // 2))
+    return canvas
+
+
 class ImageProcessor:
-    """Service class for processing durian images for inference.
-
-    Prepares images for EfficientNetB0:
-    1. Decodes from raw bytes or Base64.
-    2. Converts to RGB (removing alpha/transparency if present).
-    3. Resizes to the target dimensions defined in settings (e.g., 224x224).
-    4. Converts to a numpy array of type float32.
-    5. Normalizes pixel values (model-specific; typically 0-255 or 0-1 depending on training).
-       *Note: Standard EfficientNet in Keras expects unscaled 0-255 inputs if it includes
-       a built-in preprocessing layer, or standardized inputs otherwise. We assume
-       standard ImageNet-style normalization here, or basic scaling, but will provide
-       the Keras application's expected format.*
-    6. Expands dimensions to create a batch of 1 (1, 224, 224, 3).
-    """
 
     @staticmethod
-    def _decode_image_bytes(image_data: bytes) -> Image.Image:
-        """Decode raw bytes into a PIL Image.
-
-        Args:
-            image_data: Raw image bytes.
-
-        Returns:
-            A PIL Image object.
-
-        Raises:
-            InvalidImageException: If the bytes cannot be decoded into a valid image.
-        """
+    def _decode_bytes(data: bytes) -> Image.Image:
         try:
-            return Image.open(io.BytesIO(image_data))
+            img = Image.open(io.BytesIO(data))
+            img.verify()
+            return Image.open(io.BytesIO(data))
         except UnidentifiedImageError as e:
-            logger.error(f"Failed to identify image from bytes: {str(e)}")
-            raise InvalidImageException(detail="Uploaded file is not a valid or supported image format.") from e
+            raise InvalidImageException(
+                detail="File bukan gambar yang valid atau format tidak didukung."
+            ) from e
         except Exception as e:
-            logger.error(f"Unexpected error decoding image bytes: {str(e)}")
-            raise InvalidImageException(detail="Could not read the uploaded image data.") from e
+            raise InvalidImageException(
+                detail=f"Tidak dapat membaca data gambar: {str(e)}"
+            ) from e
 
     @staticmethod
-    def _decode_base64_image(base64_str: str) -> Image.Image:
-        """Decode a Base64 string into a PIL Image.
-
-        Args:
-            base64_str: Base64 encoded image string (without data URI prefix).
-
-        Returns:
-            A PIL Image object.
-
-        Raises:
-            InvalidImageException: If the Base64 string is invalid or not an image.
-        """
+    def _decode_base64(b64: str) -> Image.Image:
         try:
-            # Padding check/fix not strictly needed for standard b64decode but safe
-            missing_padding = len(base64_str) % 4
-            if missing_padding:
-                base64_str += '=' * (4 - missing_padding)
-            
-            image_data = base64.b64decode(base64_str)
-            return ImageProcessor._decode_image_bytes(image_data)
+            pad = len(b64) % 4
+            if pad:
+                b64 += "=" * (4 - pad)
+            raw = base64.b64decode(b64, validate=True)
+            return ImageProcessor._decode_bytes(raw)
         except base64.binascii.Error as e:
-            logger.error(f"Invalid Base64 encoding: {str(e)}")
-            raise InvalidImageException(detail="Provided string is not valid Base64.") from e
+            raise InvalidImageException(detail="String bukan Base64 yang valid.") from e
         except InvalidImageException:
             raise
         except Exception as e:
-            logger.error(f"Error decoding Base64 string to image: {str(e)}")
-            raise InvalidImageException(detail="Failed to decode Base64 image.") from e
+            raise InvalidImageException(detail=f"Gagal decode Base64: {str(e)}") from e
 
     @staticmethod
-    def process(image_input: Union[bytes, str]) -> np.ndarray:
-        """Process an image (bytes or Base64) into an inference-ready tensor.
+    def process(
+        image_input: Union[bytes, str],
+    ) -> Tuple[np.ndarray, bool, float]:
+        t0 = time.perf_counter()
 
-        Args:
-            image_input: Raw image bytes or a Base64 encoded string.
-
-        Returns:
-            A numpy array of shape (1, height, width, channels) of type float32.
-
-        Raises:
-            InvalidImageException: If decoding fails.
-            ImageProcessingException: If resizing or numpy conversion fails.
-        """
-        logger.debug("Starting image processing.")
-        
-        # 1. Decode
         if isinstance(image_input, bytes):
-            image = ImageProcessor._decode_image_bytes(image_input)
+            img = ImageProcessor._decode_bytes(image_input)
         elif isinstance(image_input, str):
-            image = ImageProcessor._decode_base64_image(image_input)
+            img = ImageProcessor._decode_base64(image_input)
         else:
-            raise ValueError(f"Unsupported input type: {type(image_input)}")
+            raise ImageProcessingException(
+                detail=f"Tipe input tidak didukung: {type(image_input)}."
+            )
 
         try:
-            # 2. Convert to RGB
-            if image.mode != "RGB":
-                logger.debug(f"Converting image from {image.mode} to RGB.")
-                image = image.convert("RGB")
+            orig_size, orig_mode = img.size, img.mode
+            logger.debug(f"Gambar asli: ukuran={orig_size}, mode={orig_mode}")
 
-            # 3. Resize (using LANCZOS for high quality downsampling)
-            target_size = settings.image_size_tuple
-            logger.debug(f"Resizing image to {target_size}.")
-            image = image.resize(target_size, Image.Resampling.LANCZOS)
+            if img.mode != "RGB":
+                img = img.convert("RGB")
 
-            # 4. Convert to Numpy array
-            img_array = np.array(image, dtype=np.float32)
+            target = settings.image_size_tuple
+            if img.size != target:
+                scale_info = min(target[0] / orig_size[0], target[1] / orig_size[1])
+                img = _letterbox_resize(img, target)
+                logger.debug(f"Letterbox {orig_size}→{target} scale={scale_info:.3f}")
 
-            # 5. Normalize (EfficientNetB0 Keras implementation specifically expects inputs 
-            #    to NOT be scaled to [0,1] or ImageNet Standardized if using the built-in
-            #    preprocessing. However, commonly ONNX exports expect ImageNet preprocessing 
-            #    or [0, 1] scaling depending on how the export was done.
-            #    Assuming standard Keras tf.keras.applications.efficientnet.preprocess_input
-            #    which actually leaves inputs as 0-255 because EfficientNet has a built-in
-            #    normalization layer. We will leave it as 0-255 float32.)
-            #    *If the model was trained differently, this normalization step needs adjustment.*
-            pass # img_array remains 0.0 - 255.0
+            arr = np.array(img, dtype=np.float32)
+            if arr.ndim != 3 or arr.shape[2] != 3:
+                raise ImageProcessingException(
+                    detail=f"Shape tidak valid: {arr.shape}. Diharapkan (H,W,3)."
+                )
 
-            # 6. Expand dimensions to (1, 224, 224, 3)
-            tensor = np.expand_dims(img_array, axis=0)
-            
-            logger.debug(f"Image processed successfully. Tensor shape: {tensor.shape}, dtype: {tensor.dtype}")
-            return tensor
+            enhanced = False
+            if settings.ENABLE_ENHANCEMENT:
+                arr      = enhance_image(arr)
+                enhanced = True
 
+            tensor    = np.expand_dims(arr, axis=0)
+            preproc_ms = (time.perf_counter() - t0) * 1000.0
+
+            logger.debug(
+                f"Processing selesai: shape={tensor.shape}, "
+                f"range=[{tensor.min():.0f},{tensor.max():.0f}], "
+                f"enhanced={enhanced}, t={preproc_ms:.1f}ms"
+            )
+            return tensor, enhanced, preproc_ms
+
+        except (InvalidImageException, ImageProcessingException):
+            raise
         except Exception as e:
-            logger.error(f"Failed during image preprocessing: {str(e)}")
-            raise ImageProcessingException(detail="Failed to preprocess the image for inference.") from e
+            logger.error(f"Gagal preprocessing: {str(e)}")
+            raise ImageProcessingException(
+                detail="Gagal memproses gambar untuk inferensi."
+            ) from e

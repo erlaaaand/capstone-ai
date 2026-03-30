@@ -1,26 +1,9 @@
-"""
-Request schemas for the Durian Classification API.
-
-Defines Pydantic models for validating incoming prediction requests,
-supporting both multipart file upload (UploadFile) and Base64-encoded
-image payloads.
-"""
-
 from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
 
 class PredictionRequestBase64(BaseModel):
-    """Request schema for Base64-encoded image prediction.
-
-    Use this schema when the client sends the image as a Base64 string
-    in a JSON payload instead of a multipart file upload.
-
-    Attributes:
-        image_base64: Base64-encoded image data string.
-        filename: Optional original filename for extension validation.
-    """
 
     image_base64: str = Field(
         ...,
@@ -37,11 +20,9 @@ class PredictionRequestBase64(BaseModel):
     @field_validator("image_base64")
     @classmethod
     def validate_base64_not_empty(cls, v: str) -> str:
-        """Ensure the Base64 string is not just whitespace."""
         stripped = v.strip()
         if not stripped:
             raise ValueError("image_base64 must not be empty or whitespace.")
-        # Strip optional data URI prefix (e.g., "data:image/jpeg;base64,")
         if "," in stripped and stripped.startswith("data:"):
             return stripped.split(",", 1)[1]
         return stripped
@@ -49,7 +30,6 @@ class PredictionRequestBase64(BaseModel):
     @field_validator("filename")
     @classmethod
     def validate_filename(cls, v: Optional[str]) -> Optional[str]:
-        """Normalize filename to lowercase if provided."""
         if v is not None:
             return v.strip().lower()
         return v

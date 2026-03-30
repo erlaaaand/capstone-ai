@@ -38,3 +38,5 @@ httpx>=0.27.0,<1.0.0
 # --- Linting & Formatting (Optional) ---
 # ruff>=0.2.0
 # mypy>=1.8.0
+
+psutil>=5.9.0,<6.0.0

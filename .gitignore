@@ -15,6 +15,7 @@ models/evaluation/
 *.onnx
 *.pt
 *.pth
+*.keras
 
 __pycache__/
 *.py[cod]

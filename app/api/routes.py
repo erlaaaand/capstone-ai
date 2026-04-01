@@ -19,6 +19,7 @@ from schemas.request import PredictionRequestBase64
 from schemas.response import PredictionResponse
 from services.image_processor import ImageProcessor
 from services.inference_service import InferenceService
+from services.clip_service import CLIPService
 
 logger = get_logger(__name__)
 
@@ -143,6 +144,14 @@ async def predict_durian(
 
         if raw_input is None:
             raise InvalidImageException(detail="Gagal mengekstrak data gambar.")
+        
+        is_valid_durian = await asyncio.to_thread(CLIPService.is_durian, raw_input)
+        if not is_valid_durian:
+            raise InvalidImageException(detail="Gambar ditolak. Sistem mendeteksi ini bukan gambar buah durian.")
+
+        tensor, enhanced, preproc_ms = await asyncio.to_thread(
+            ImageProcessor.process, raw_input
+        )
 
         tensor, enhanced, preproc_ms = await asyncio.to_thread(
             ImageProcessor.process, raw_input

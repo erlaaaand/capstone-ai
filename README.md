@@ -680,4 +680,4 @@ ALLOWED_HOSTS_STR=api.example.com,*.example.com
 
 ## Lisensi
 
-Developed for the **Erland Agsya**.
+Developed by **Erland Agsya**.

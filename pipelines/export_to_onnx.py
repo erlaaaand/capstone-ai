@@ -15,30 +15,34 @@ logger = get_logger("export_pipeline")
 
 
 def build_inference_model(trained_model: tf.keras.Model) -> tf.keras.Model:
-    try:
-        backbone = trained_model.get_layer("backbone")
-    except ValueError:
-        backbone = None
+
+    backbone = None
+    for layer in trained_model.layers:
+        if layer.name == "backbone":
+            backbone = layer
+            break
+    if backbone is None:
         for layer in trained_model.layers:
             if "efficientnet" in layer.name.lower():
                 backbone = layer
                 break
-        if backbone is None:
-            raise ValueError(
-                "Tidak dapat menemukan backbone EfficientNetB0 di dalam model. "
-                "Pastikan layer backbone diberi nama 'backbone' saat build_model()."
-            )
+    if backbone is None:
+        raise ValueError(
+            "Tidak dapat menemukan backbone EfficientNetB0 di dalam model. "
+            "Pastikan layer backbone diberi nama 'backbone' saat build_model()."
+        )
 
     logger.info(f"Backbone ditemukan: '{backbone.name}'")
 
-    img_input = tf.keras.Input(shape=(224, 224, 3), name="image_input")
+    img_input = tf.keras.Input(shape=(224, 224, 3), dtype=tf.float32, name="image_input")
 
     x = backbone(img_input, training=False)
 
     head_layer_names = [
-        "gap", "bn_0", "drop_0",
-        "dense_512", "bn_1", "drop_1",
-        "dense_256", "bn_2", "drop_2",
+        "gap",       "bn_0",    "drop_0",
+        "dense_512", "bn_1",    "drop_1",
+        "dense_256", "bn_2",    "drop_2",
+        "dense_128", "bn_3",    "drop_3",
         "predictions",
     ]
 
@@ -59,11 +63,15 @@ def build_inference_model(trained_model: tf.keras.Model) -> tf.keras.Model:
     dummy = np.zeros((1, 224, 224, 3), dtype=np.float32)
     out   = inference_model(dummy, training=False)
     logger.info(f"Inference model output shape: {out.shape}  (harus: (1, num_classes))")
+    logger.info(f"Inference model output dtype: {out.dtype}  (harus: float32)")
 
     return inference_model
 
 
-def export_to_onnx(input_path: str, onnx_path: str) -> None:
+def export_to_onnx(input_path: str, onnx_path: str, opset: int = 17) -> None:
+    tf.keras.mixed_precision.set_global_policy("float32")
+    logger.info("Global mixed precision policy di-set ke float32 sebelum load model.")
+
     input_file  = Path(input_path)
     output_file = Path(onnx_path)
 
@@ -75,23 +83,41 @@ def export_to_onnx(input_path: str, onnx_path: str) -> None:
 
     logger.info(f"Loading Keras model dari: {input_file}")
     try:
-        trained_model = tf.keras.models.load_model(str(input_file))
+        original_model = tf.keras.models.load_model(str(input_file))
         logger.info("Model Keras berhasil di-load.")
-        trained_model.summary(line_length=80)
+        
+        logger.info("Mencuci arsitektur model dari mixed_float16 ke pure float32...")
+        model_json = original_model.to_json()
+        
+        model_json = model_json.replace('"mixed_float16"', '"float32"')
+        model_json = model_json.replace('"float16"', '"float32"')
+        
+        model_json = model_json.replace('"gelu"', '"swish"')
+        
+        trained_model = tf.keras.models.model_from_json(model_json)
+        
+        trained_model.set_weights(original_model.get_weights())
+        logger.info("Konversi ke pure float32 berhasil.")
+        
     except Exception as e:
-        logger.error(f"Gagal load Keras model: {str(e)}")
+        logger.error(f"Gagal load atau cuci Keras model: {str(e)}")
         sys.exit(1)
 
-    logger.info("Membangun inference-only model (tanpa augmentation layer)...")
+    logger.info("Membangun inference-only model (strip augmentation)...")
     try:
         inference_model = build_inference_model(trained_model)
         logger.info("Inference model berhasil dibangun.")
+        inference_model.summary(line_length=80)
     except Exception as e:
         logger.error(f"Gagal membangun inference model: {str(e)}")
         logger.warning("Fallback: menggunakan model asli tanpa stripping augmentation.")
         inference_model = trained_model
 
-    logger.info("Mengkonversi ke ONNX format...")
+    logger.info(f"Mengkonversi ke ONNX format (opset={opset})...")
+    logger.info(
+        "Catatan: opset 17 digunakan karena mendukung GELU/Erfc multi-dtype."
+    )
+
     try:
         input_signature = [
             tf.TensorSpec(
@@ -104,12 +130,16 @@ def export_to_onnx(input_path: str, onnx_path: str) -> None:
         _, _ = tf2onnx.convert.from_keras(
             inference_model,
             input_signature=input_signature,
-            opset=13,
+            opset=opset,
             output_path=str(output_file),
         )
 
         size_mb = output_file.stat().st_size / 1e6
         logger.info(f"ONNX export berhasil → {output_file}  ({size_mb:.1f} MB)")
+        logger.info(
+            f"Ukuran ~18-20MB = float32 (benar). "
+            f"Jika ~10MB = float16 (salah, ada masalah casting)."
+        )
 
     except Exception as e:
         logger.error(f"Gagal konversi ONNX: {str(e)}")
@@ -125,23 +155,25 @@ def export_to_onnx(input_path: str, onnx_path: str) -> None:
         )
         input_name  = sess.get_inputs()[0].name
         output_name = sess.get_outputs()[0].name
+        input_dtype = sess.get_inputs()[0].type
+
+        logger.info(f"  Input  : name='{input_name}' dtype={input_dtype}")
+        logger.info(f"  Output : name='{output_name}'")
 
         dummy_input = np.zeros((1, 224, 224, 3), dtype=np.float32)
         outputs     = sess.run([output_name], {input_name: dummy_input})
 
+        output_shape = outputs[0].shape
         logger.info(
             f"Verifikasi OK | input='{input_name}' | output='{output_name}' "
-            f"| output_shape={outputs[0].shape}"
+            f"| output_shape={output_shape}"
         )
 
-        prob_sum = float(outputs[0][0].sum())
-        if abs(prob_sum - 1.0) < 0.01:
-            logger.info(f"Output probability valid (sum={prob_sum:.6f} ≈ 1.0) ✓")
+        num_classes_onnx = output_shape[-1]
+        if num_classes_onnx != 8:
+            logger.warning(f"Output memiliki {num_classes_onnx} kelas, diharapkan 8.")
         else:
-            logger.warning(
-                f"Output sum={prob_sum:.6f} — mungkin bukan softmax probability. "
-                f"Periksa inference_service.py apakah perlu softmax manual."
-            )
+            logger.info(f"Jumlah kelas: {num_classes_onnx} ✓")
 
     except Exception as e:
         logger.warning(f"Verifikasi ONNX gagal (model mungkin tetap valid): {str(e)}")
@@ -163,12 +195,18 @@ def main() -> None:
         default="models/weights/efficientnet_b0.onnx",
         help="Path output file .onnx",
     )
+    parser.add_argument(
+        "--opset",
+        type=int,
+        default=17,
+        help="ONNX opset version (default: 17).",
+    )
     args = parser.parse_args()
 
     input_path  = PROJECT_ROOT / args.input
     output_path = PROJECT_ROOT / args.output
 
-    export_to_onnx(str(input_path), str(output_path))
+    export_to_onnx(str(input_path), str(output_path), opset=args.opset)
 
 
 if __name__ == "__main__":

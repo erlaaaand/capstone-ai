@@ -17,9 +17,9 @@ from core.middleware import (
     RequestLoggingMiddleware,
     SecurityHeadersMiddleware,
 )
+from core.rate_limiter import get_rate_limiter
 from core.security import get_key_manager
 from models.model_loader import get_model_loader
-
 from services.clip_service import CLIPService
 
 logger = get_logger(__name__)
@@ -62,6 +62,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"[Startup] Error saat warmup CLIP: {str(e)}")
 
+    logger.info("[Startup] Memulai rate limiter cleanup task...")
+    try:
+        rate_limiter = get_rate_limiter()
+        await rate_limiter.start_cleanup_task()
+        logger.info("[Startup] Rate limiter cleanup task aktif.")
+    except Exception as e:
+        logger.error(
+            f"[Startup] Gagal memulai cleanup task: {str(e)}. "
+            "Cleanup akan tetap berjalan sebagai fallback saat ada request."
+        )
+
     logger.info(
         f"[Startup] Config: classes={settings.num_classes} "
         f"| img_size={settings.IMAGE_SIZE} "
@@ -74,11 +85,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     logger.info("[Shutdown] Memulai graceful shutdown...")
+
+    try:
+        rate_limiter = get_rate_limiter()
+        await rate_limiter.stop_cleanup_task()
+        logger.info("[Shutdown] Rate limiter cleanup task dihentikan.")
+    except Exception as e:
+        logger.error(f"[Shutdown] Error saat stop cleanup task: {str(e)}")
+
     try:
         get_model_loader().unload_model()
         logger.info("[Shutdown] ONNX model di-unload.")
     except Exception as e:
         logger.error(f"[Shutdown] Error unload model: {str(e)}")
+
     logger.info("[Shutdown] Selesai.")
 
 
@@ -147,8 +167,8 @@ def create_app() -> FastAPI:
         version     = settings.APP_VERSION,
         description = "Enterprise Durian Classification API",
         lifespan    = lifespan,
-        docs_url    = "/docs"    if settings.DEBUG else None,
-        redoc_url   = "/redoc"   if settings.DEBUG else None,
+        docs_url    = "/docs"         if settings.DEBUG else None,
+        redoc_url   = "/redoc"        if settings.DEBUG else None,
         openapi_url = "/openapi.json" if settings.DEBUG else None,
     )
 
@@ -176,11 +196,10 @@ def create_app() -> FastAPI:
             "X-RateLimit-Reset",
             "X-API-Version",
         ],
-        max_age           = 600,
+        max_age = 600,
     )
 
     app.add_middleware(RequestLoggingMiddleware)
-
     app.add_middleware(SecurityHeadersMiddleware)
 
     @app.exception_handler(DurianServiceException)
@@ -194,7 +213,7 @@ def create_app() -> FastAPI:
                 "detail":     exc.detail,
                 "request_id": request_id,
             },
-            headers     = exc.headers or {},
+            headers = exc.headers or {},
         )
 
     @app.exception_handler(404)
@@ -230,18 +249,17 @@ def create_app() -> FastAPI:
     )
     async def root():
         return {
-            "name":         settings.APP_NAME,
-            "version":      settings.APP_VERSION,
-            "status":       "operational",
-            "docs":         "/docs" if settings.DEBUG else "disabled (production)",
-            "health":       "/api/v1/health",
-            "predict":      "/api/v1/predict",
+            "name":          settings.APP_NAME,
+            "version":       settings.APP_VERSION,
+            "status":        "operational",
+            "docs":          "/docs" if settings.DEBUG else "disabled (production)",
+            "health":        "/api/v1/health",
+            "predict":       "/api/v1/predict",
             "auth_required": True,
-            "auth_header":  "X-API-Key",
+            "auth_header":   "X-API-Key",
         }
 
     app.include_router(api_router)
-
     app.openapi = lambda: custom_openapi(app)
 
     return app

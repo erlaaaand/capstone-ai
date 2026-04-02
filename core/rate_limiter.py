@@ -2,18 +2,16 @@ import asyncio
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Deque, Dict, Optional, Tuple
+from typing import Deque, Dict, Optional
 
 from core.logger import get_logger
 
 logger = get_logger(__name__)
 
-WINDOW_SECONDS = 60
-
-BURST_LIMIT = 20
-
-CLEANUP_INTERVAL_SECONDS = 300
-
+WINDOW_SECONDS            = 60
+BURST_LIMIT               = 20
+CLEANUP_INTERVAL_SECONDS  = 300
+STALE_THRESHOLD_SECONDS   = 600
 
 @dataclass
 class RateLimitState:
@@ -24,25 +22,65 @@ class RateLimitState:
 
 @dataclass
 class RateLimitResult:
-    allowed:    bool
-    limit:      int
-    remaining:  int
-    reset_at:   float
-    retry_after: float        = 0.0
-    reason:     str           = ""
+    allowed:     bool
+    limit:       int
+    remaining:   int
+    reset_at:    float
+    retry_after: float = 0.0
+    reason:      str   = ""
 
 
 class SlidingWindowRateLimiter:
-
     def __init__(self) -> None:
-        self._states:      Dict[str, RateLimitState] = {}
-        self._lock:        asyncio.Lock               = asyncio.Lock()
-        self._last_cleanup: float                     = time.time()
+        self._states:        Dict[str, RateLimitState] = {}
+        self._lock:          asyncio.Lock               = asyncio.Lock()
+        self._last_cleanup:  float                      = time.time()
+        self._cleanup_task:  Optional[asyncio.Task]     = None
+
+    async def start_cleanup_task(self) -> None:
+
+        if self._cleanup_task is not None and not self._cleanup_task.done():
+            logger.debug("Cleanup task sudah berjalan, skip.")
+            return
+
+        self._cleanup_task = asyncio.create_task(
+            self._cleanup_loop(),
+            name="rate_limiter_cleanup",
+        )
+        logger.info(
+            f"[RateLimiter] Background cleanup task dimulai "
+            f"(interval={CLEANUP_INTERVAL_SECONDS}s, "
+            f"stale_threshold={STALE_THRESHOLD_SECONDS}s)."
+        )
+
+    async def stop_cleanup_task(self) -> None:
+
+        if self._cleanup_task is None or self._cleanup_task.done():
+            return
+
+        self._cleanup_task.cancel()
+        try:
+            await self._cleanup_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("[RateLimiter] Background cleanup task dihentikan.")
+
+    async def _cleanup_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
+                await self._cleanup(time.time())
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[RateLimiter] Error di cleanup loop: {e}", exc_info=True)
+                
+                await asyncio.sleep(10)
 
     async def check(
         self,
-        identifier: str,
-        limit:      int,
+        identifier:  str,
+        limit:       int,
         burst_limit: int = BURST_LIMIT,
     ) -> RateLimitResult:
         async with self._lock:
@@ -76,9 +114,9 @@ class SlidingWindowRateLimiter:
 
             current_count = len(state.requests)
             if current_count >= limit:
-                oldest       = state.requests[0]
-                reset_at     = oldest + WINDOW_SECONDS
-                retry_after  = max(reset_at - now, 0.1)
+                oldest      = state.requests[0]
+                reset_at    = oldest + WINDOW_SECONDS
+                retry_after = max(reset_at - now, 0.1)
                 return RateLimitResult(
                     allowed     = False,
                     limit       = limit,
@@ -94,8 +132,10 @@ class SlidingWindowRateLimiter:
             reset_at  = (state.requests[0] + WINDOW_SECONDS) if state.requests else (now + WINDOW_SECONDS)
             remaining = max(limit - len(state.requests), 0)
 
-            if now - self._last_cleanup > CLEANUP_INTERVAL_SECONDS:
-                await self._cleanup(now)
+            if (
+                self._cleanup_task is None or self._cleanup_task.done()
+            ) and (now - self._last_cleanup > CLEANUP_INTERVAL_SECONDS):
+                asyncio.ensure_future(self._cleanup_safe(now))
 
             return RateLimitResult(
                 allowed   = True,
@@ -104,18 +144,43 @@ class SlidingWindowRateLimiter:
                 reset_at  = reset_at,
             )
 
+    async def _cleanup_safe(self, now: float) -> None:
+
+        try:
+            await self._cleanup(now)
+        except Exception as e:
+            logger.error(f"[RateLimiter] Error saat cleanup: {e}", exc_info=True)
+
     async def _cleanup(self, now: float) -> None:
-        cutoff      = now - 600
-        stale_keys  = [k for k, s in self._states.items() if s.last_seen < cutoff]
-        for k in stale_keys:
-            del self._states[k]
-        if stale_keys:
-            logger.debug(f"Rate limiter cleanup: hapus {len(stale_keys)} entry stale.")
-        self._last_cleanup = now
+
+        async with self._lock:
+            cutoff     = now - STALE_THRESHOLD_SECONDS
+            stale_keys = [
+                k for k, s in self._states.items()
+                if s.last_seen < cutoff
+            ]
+            for k in stale_keys:
+                del self._states[k]
+
+            if stale_keys:
+                logger.info(
+                    f"[RateLimiter] Cleanup: hapus {len(stale_keys)} stale entries. "
+                    f"Sisa: {len(self._states)} entries."
+                )
+            else:
+                logger.debug(
+                    f"[RateLimiter] Cleanup: tidak ada stale entries. "
+                    f"Total: {len(self._states)} entries."
+                )
+
+            self._last_cleanup = now
 
     def get_stats(self) -> Dict[str, int]:
         return {
             "tracked_identifiers": len(self._states),
+            "cleanup_task_active": int(
+                self._cleanup_task is not None and not self._cleanup_task.done()
+            ),
         }
 
 

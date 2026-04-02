@@ -144,14 +144,19 @@ async def predict_durian(
 
         if raw_input is None:
             raise InvalidImageException(detail="Gagal mengekstrak data gambar.")
-        
-        is_valid_durian = await asyncio.to_thread(CLIPService.is_durian, raw_input)
-        if not is_valid_durian:
-            raise InvalidImageException(detail="Gambar ditolak. Sistem mendeteksi ini bukan gambar buah durian.")
 
-        tensor, enhanced, preproc_ms = await asyncio.to_thread(
-            ImageProcessor.process, raw_input
+        clip_task    = asyncio.to_thread(CLIPService.is_durian, raw_input)
+        process_task = asyncio.to_thread(ImageProcessor.process, raw_input)
+
+        (is_valid_durian, (tensor, enhanced, preproc_ms)) = await asyncio.gather(
+            clip_task,
+            process_task,
         )
+
+        if not is_valid_durian:
+            raise InvalidImageException(
+                detail="Gambar ditolak. Sistem mendeteksi ini bukan gambar buah durian."
+            )
 
         pred_response = await asyncio.to_thread(
             InferenceService.predict, tensor, enhanced, preproc_ms

@@ -153,10 +153,6 @@ async def predict_durian(
             ImageProcessor.process, raw_input
         )
 
-        tensor, enhanced, preproc_ms = await asyncio.to_thread(
-            ImageProcessor.process, raw_input
-        )
-
         pred_response = await asyncio.to_thread(
             InferenceService.predict, tensor, enhanced, preproc_ms
         )

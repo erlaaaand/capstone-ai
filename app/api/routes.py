@@ -4,7 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, Response, UploadFile, status
 
-from app.core_dependencies import AuthResult, verify_api_key
+from app.core_dependencies import AuthResult, require_scope, verify_api_key
 from core.config import settings
 from core.exceptions import (
     DurianServiceException,
@@ -34,14 +34,26 @@ MAGIC_BYTES: dict = {
 
 
 def _check_magic_bytes(data: bytes, ext: str) -> bool:
+
     if ext not in MAGIC_BYTES:
         return True
+
     header = data[:12]
+
     for magic in MAGIC_BYTES[ext]:
-        if header.startswith(magic):
-            if ext == "webp":
-                return len(data) >= 12 and data[8:12] == b"WEBP"
-            return True
+        if not header.startswith(magic):
+            continue
+
+        if ext == "webp":
+
+            return (
+                len(data) >= 12
+                and data[0:4] == b"RIFF"
+                and data[8:12] == b"WEBP"
+            )
+
+        return True
+
     return False
 
 
@@ -90,25 +102,20 @@ def _validate_file(data: bytes, filename: str, request_id: str, client_ip: str) 
     ),
 )
 async def predict_durian(
-    request: Request,
+    request:  Request,
     response: Response,
-    file: Optional[UploadFile] = File(
-        default=None,
-        description="File gambar (JPG/PNG/WebP, ukuran apapun).",
+    file:     Optional[UploadFile] = File(
+        default     = None,
+        description = "File gambar (JPG/PNG/WebP, ukuran apapun).",
     ),
-    payload:  Optional[PredictionRequestBase64] = Body(default=None),
-    auth:     AuthResult = Depends(verify_api_key),
+    payload: Optional[PredictionRequestBase64] = Body(default=None),
+
+    auth: AuthResult = Depends(require_scope(KeyScope.PREDICT)),
 ) -> PredictionResponse:
     request_id = getattr(request.state, "request_id", str(uuid.uuid4())[:8])
     client_ip  = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (
         request.client.host if request.client else "unknown"
     )
-
-    if KeyScope.PREDICT not in auth.scopes and KeyScope.ADMIN not in auth.scopes:
-        raise HTTPException(
-            status_code = status.HTTP_403_FORBIDDEN,
-            detail      = "API key tidak punya scope 'predict'. Hubungi administrator.",
-        )
 
     rate_headers = getattr(request.state, "rate_headers", {})
     for k, v in rate_headers.items():

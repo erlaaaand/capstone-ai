@@ -20,6 +20,8 @@ from core.middleware import (
 from core.security import get_key_manager
 from models.model_loader import get_model_loader
 
+from services.clip_service import CLIPService
+
 logger = get_logger(__name__)
 
 
@@ -40,12 +42,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         model_loader = get_model_loader()
         model_loader.load_model()
-        logger.info("[Startup] Model siap menerima request.")
+        logger.info("[Startup] ONNX model siap menerima request.")
     except Exception as e:
         logger.critical(
             f"[Startup] Gagal load model: {str(e)}. "
             "Service berjalan tapi /predict akan return 503."
         )
+
+    logger.info("[Startup] Memuat model CLIP untuk validasi gambar...")
+    try:
+        clip_ready = CLIPService.warmup()
+        if clip_ready:
+            logger.info("[Startup] CLIP model siap.")
+        else:
+            logger.warning(
+                "[Startup] CLIP model gagal dimuat. "
+                "Validasi zero-shot dinonaktifkan — semua gambar akan diizinkan."
+            )
+    except Exception as e:
+        logger.error(f"[Startup] Error saat warmup CLIP: {str(e)}")
 
     logger.info(
         f"[Startup] Config: classes={settings.num_classes} "
@@ -61,7 +76,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("[Shutdown] Memulai graceful shutdown...")
     try:
         get_model_loader().unload_model()
-        logger.info("[Shutdown] Model di-unload.")
+        logger.info("[Shutdown] ONNX model di-unload.")
     except Exception as e:
         logger.error(f"[Shutdown] Error unload model: {str(e)}")
     logger.info("[Shutdown] Selesai.")

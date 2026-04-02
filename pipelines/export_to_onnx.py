@@ -1,4 +1,5 @@
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -12,6 +13,66 @@ sys.path.append(str(PROJECT_ROOT))
 from core.logger import get_logger
 
 logger = get_logger("export_pipeline")
+
+def _replace_activation_in_config(config: dict | list, old: str, new: str) -> None:
+
+    if isinstance(config, dict):
+        if "activation" in config:
+            act = config["activation"]
+            if isinstance(act, str) and act == old:
+                config["activation"] = new
+                logger.info(f"  Activation '{old}' → '{new}' (field langsung)")
+            elif isinstance(act, dict):
+                if act.get("class_name") == old:
+                    act["class_name"] = new
+                    logger.info(f"  Activation class_name '{old}' → '{new}' (dict nested)")
+
+        for value in config.values():
+            if isinstance(value, (dict, list)):
+                _replace_activation_in_config(value, old, new)
+
+    elif isinstance(config, list):
+        for item in config:
+            if isinstance(item, (dict, list)):
+                _replace_activation_in_config(item, old, new)
+
+
+def _replace_dtype_in_config(config: dict | list, old: str, new: str) -> None:
+    if isinstance(config, dict):
+        for key in ("dtype", "compute_dtype", "variable_dtype"):
+            if config.get(key) == old:
+                config[key] = new
+                logger.info(f"  dtype field '{key}': '{old}' → '{new}'")
+
+        if config.get("class_name") == "Policy":
+            inner = config.get("config", {})
+            if isinstance(inner, dict) and inner.get("name") == old:
+                inner["name"] = new
+                logger.info(f"  Policy name: '{old}' → '{new}'")
+
+        for value in config.values():
+            if isinstance(value, (dict, list)):
+                _replace_dtype_in_config(value, old, new)
+
+    elif isinstance(config, list):
+        for item in config:
+            if isinstance(item, (dict, list)):
+                _replace_dtype_in_config(item, old, new)
+
+
+def _sanitize_model_config(model_json: str) -> str:
+    try:
+        config = json.loads(model_json)
+    except json.JSONDecodeError as e:
+        logger.error(f"Gagal parse model JSON: {e}")
+        raise
+
+    _replace_dtype_in_config(config, "mixed_float16", "float32")
+    _replace_dtype_in_config(config, "float16", "float32")
+
+    _replace_activation_in_config(config, "gelu", "swish")
+
+    return json.dumps(config)
 
 
 def build_inference_model(trained_model: tf.keras.Model) -> tf.keras.Model:
@@ -85,20 +146,18 @@ def export_to_onnx(input_path: str, onnx_path: str, opset: int = 17) -> None:
     try:
         original_model = tf.keras.models.load_model(str(input_file))
         logger.info("Model Keras berhasil di-load.")
-        
+
         logger.info("Mencuci arsitektur model dari mixed_float16 ke pure float32...")
-        model_json = original_model.to_json()
-        
-        model_json = model_json.replace('"mixed_float16"', '"float32"')
-        model_json = model_json.replace('"float16"', '"float32"')
-        
-        model_json = model_json.replace('"gelu"', '"swish"')
-        
-        trained_model = tf.keras.models.model_from_json(model_json)
-        
+
+        raw_json = original_model.to_json()
+
+        sanitized_json = _sanitize_model_config(raw_json)
+        logger.info("Sanitasi model config selesai (struktural, aman).")
+
+        trained_model = tf.keras.models.model_from_json(sanitized_json)
         trained_model.set_weights(original_model.get_weights())
         logger.info("Konversi ke pure float32 berhasil.")
-        
+
     except Exception as e:
         logger.error(f"Gagal load atau cuci Keras model: {str(e)}")
         sys.exit(1)
@@ -114,9 +173,6 @@ def export_to_onnx(input_path: str, onnx_path: str, opset: int = 17) -> None:
         inference_model = trained_model
 
     logger.info(f"Mengkonversi ke ONNX format (opset={opset})...")
-    logger.info(
-        "Catatan: opset 17 digunakan karena mendukung GELU/Erfc multi-dtype."
-    )
 
     try:
         input_signature = [
@@ -137,8 +193,8 @@ def export_to_onnx(input_path: str, onnx_path: str, opset: int = 17) -> None:
         size_mb = output_file.stat().st_size / 1e6
         logger.info(f"ONNX export berhasil → {output_file}  ({size_mb:.1f} MB)")
         logger.info(
-            f"Ukuran ~18-20MB = float32 (benar). "
-            f"Jika ~10MB = float16 (salah, ada masalah casting)."
+            "Ukuran ~18-20MB = float32 (benar). "
+            "Jika ~10MB = float16 (salah, ada masalah casting)."
         )
 
     except Exception as e:

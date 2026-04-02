@@ -15,52 +15,52 @@ class VarietyInfo(NamedTuple):
 
 VARIETY_MAP: Dict[str, VarietyInfo] = {
     "D2": VarietyInfo(
-        display_name="Chanee",
-        local_name="D2 / Chanee",
-        origin="Thailand / Malaysia Utara",
-        description="Durian berukuran besar dengan daging kuning pucat. Rasa manis ringan dengan sedikit pahit, tekstur creamy.",
+        display_name="Dato Nina",
+        local_name="D2 / Dato Nina",
+        origin="Malaysia (Melaka)",
+        description="Durian dengan bentuk buah agak bulat. Daging buahnya berwarna tembaga atau kuning kecokelatan dengan kombinasi rasa manis dan sedikit pahit.",
     ),
     "D13": VarietyInfo(
-        display_name="Kuk San",
-        local_name="D13 / Kuk San",
-        origin="Malaysia Barat",
-        description="Daging berwarna kuning dengan rasa manis-pahit yang seimbang. Biji relatif kecil sehingga proporsi daging lebih banyak.",
-    ),
-    "D197": VarietyInfo(
-        display_name="Golden Phoenix",
-        local_name="D197 / Jin Feng / Golden Phoenix",
-        origin="Malaysia",
-        description="Varietas premium dengan daging kuning cerah hampir keemasan. Rasa manis-pahit yang intens dan tekstur sangat lembut.",
-    ),
-    "D198": VarietyInfo(
-        display_name="Red Prawn",
-        local_name="D198 / Udang Merah / Red Prawn",
-        origin="Malaysia (Balik Pulau, Penang)",
-        description="Ciri khas daging berwarna merah-orange yang unik. Rasa manis kuat dengan tekstur lembut seperti krim.",
-    ),
-    "D200": VarietyInfo(
-        display_name="Musang King",
-        local_name="D200 / Musang King / Raja Kunyit / Mao Shan Wang",
-        origin="Malaysia (Kelantan / Gua Musang)",
-        description="Raja durian Malaysia dengan daging kuning-emas yang tebal. Rasa kaya manis-pahit yang kompleks, tekstur creamy-padat.",
+        display_name="Golden Bun",
+        local_name="D13 / Golden Bun",
+        origin="Malaysia (Johor)",
+        description="Memiliki daging berwarna oranye kemerahan yang pekat. Rasanya manis, sangat wangi, dan bijinya besar. Ciri luarnya cenderung membulat dengan duri tebal.",
     ),
     "D24": VarietyInfo(
         display_name="Sultan",
-        local_name="D24 / Sultan",
-        origin="Malaysia",
-        description="Varietas legendaris dengan daging kuning-cream yang lebat. Rasa pahit-manis yang kaya dan kompleks, aroma sangat kuat.",
+        local_name="D24 / Sultan / Bukit Merah",
+        origin="Malaysia (Perak / Selangor)",
+        description="Varietas legendaris dengan daging kuning pucat hingga krem. Rasa pahit-manis yang kaya. Ciri fisik luarnya memiliki duri yang cukup tajam dan rapat dengan bentuk cenderung oval.",
     ),
     "D88": VarietyInfo(
-        display_name="Tekka",
-        local_name="D88 / Tekka",
-        origin="Malaysia (Johor)",
-        description="Durian dengan daging kuning dan rasa manis yang dominan. Tekstur lembut dengan sedikit hint pahit di akhir.",
+        display_name="Darling",
+        local_name="D88 / Darling / Bangkok 8",
+        origin="Malaysia",
+        description="Durian dengan daging berwarna kuning pucat. Memiliki kombinasi rasa manis sedang dengan tekstur yang lembut.",
     ),
     "D101": VarietyInfo(
-        display_name="Nyuk Kun",
-        local_name="D101 / Nyuk Kun",
+        display_name="Muar Gold",
+        local_name="D101 / Muar Gold / Johor Mas",
+        origin="Malaysia (Johor)",
+        description="Daging buah tebal berwarna kuning oranye cerah. Rasanya sangat manis dengan tekstur lembut, nyaris tanpa rasa pahit. Kulit luarnya cenderung berwarna hijau kekuningan.",
+    ),
+    "D197": VarietyInfo(
+        display_name="Musang King",
+        local_name="D197 / Musang King / Raja Kunyit / Mao Shan Wang",
+        origin="Malaysia (Kelantan)",
+        description="Raja durian Malaysia dengan daging kuning-emas tebal. Rasa kaya manis-pahit yang kompleks. Ciri khas luarnya memiliki pola bintang (star-shape) botak di bagian bawah dan duri berbentuk piramida.",
+    ),
+    "D198": VarietyInfo(
+        display_name="Golden Phoenix",
+        local_name="D198 / Jin Feng / Golden Phoenix",
+        origin="Malaysia (Johor)",
+        description="Daging berwarna kuning pucat hingga putih dengan rasa dominan pahit tajam dan tekstur berair namun lembut. Ciri luarnya memiliki duri yang tajam, tipis, dan rapat menyerupai jarum.",
+    ),
+    "D200": VarietyInfo(
+        display_name="Black Thorn",
+        local_name="D200 / Ochee / Duri Hitam / Black Thorn",
         origin="Malaysia (Penang)",
-        description="Varietas Penang dengan daging kuning-orange tebal. Rasa sangat manis dengan tekstur lembut dan creamy. Biji kecil.",
+        description="Durian super premium dengan daging oranye kemerahan dan rasa manis-pahit yang sangat pekat. Ciri khas luarnya bentuknya membulat dengan garis lekukan di bagian bawah dan ujung duri berwarna kehitaman.",
     ),
 }
 
@@ -180,5 +180,10 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     return Settings()
 
+
+def reload_settings() -> Settings:
+
+    get_settings.cache_clear()
+    return get_settings()
 
 settings: Settings = get_settings()

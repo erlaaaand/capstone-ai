@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -42,26 +43,26 @@ KEY_PREFIX_LEN  = 10
 
 @dataclass
 class APIKeyRecord:
-    key_hash:    str
-    key_prefix:  str
-    name:        str
-    scopes:      Set[KeyScope]
-    tier:        RateLimitTier
-    active:      bool       = True
-    deprecated:  bool       = False
-    created_at:  float      = field(default_factory=time.time)
-    expires_at:  Optional[float] = None
+    key_hash:   str
+    key_prefix: str
+    name:       str
+    scopes:     Set[KeyScope]
+    tier:       RateLimitTier
+    active:     bool            = True
+    deprecated: bool            = False
+    created_at: float           = field(default_factory=time.time)
+    expires_at: Optional[float] = None
 
 
 @dataclass
 class AuthResult:
-    valid:       bool
-    key_prefix:  str         = ""
-    key_name:    str         = ""
-    scopes:      Set[KeyScope] = field(default_factory=set)
-    tier:        RateLimitTier = RateLimitTier.FREE
-    deprecated:  bool        = False
-    error:       str         = ""
+    valid:      bool
+    key_prefix: str           = ""
+    key_name:   str           = ""
+    scopes:     Set[KeyScope] = field(default_factory=set)
+    tier:       RateLimitTier = RateLimitTier.FREE
+    deprecated: bool          = False
+    error:      str           = ""
 
 
 def _hash_key(raw_key: str, salt: Optional[str] = None) -> tuple[str, str]:
@@ -100,7 +101,7 @@ def hash_api_key(raw_key: str) -> str:
 
 
 def generate_api_key(live: bool = True) -> str:
-    prefix    = KEY_PREFIX_LIVE if live else KEY_PREFIX_TEST
+    prefix      = KEY_PREFIX_LIVE if live else KEY_PREFIX_TEST
     random_part = secrets.token_urlsafe(24)
     return f"{prefix}{random_part}"
 
@@ -112,62 +113,78 @@ def get_key_prefix(raw_key: str) -> str:
 
 
 class APIKeyManager:
+    _singleton_lock: threading.Lock          = threading.Lock()
+    _instance:       Optional["APIKeyManager"] = None
 
-    _instance: Optional["APIKeyManager"] = None
-    _keys: Dict[str, APIKeyRecord] = {}
+    # Deklarasi tipe level kelas (Mengatasi warning Pylance)
+    _keys:      Dict[str, APIKeyRecord]
+    _loaded:    bool
+    _load_lock: threading.RLock
 
     def __new__(cls) -> "APIKeyManager":
-        if cls._instance is None:
-            inst          = super().__new__(cls)
-            inst._keys    = {}
-            inst._loaded  = False
-            cls._instance = inst
+        # Fast path — sudah ada instance
+        if cls._instance is not None:
+            return cls._instance
+
+        with cls._singleton_lock:
+            if cls._instance is None:
+                inst = super().__new__(cls)
+
+                # Inisialisasi tanpa anotasi inline (Mengatasi warning Pylance)
+                inst._keys      = {}
+                inst._loaded    = False
+                inst._load_lock = threading.RLock()
+
+                cls._instance = inst
+
         return cls._instance
 
     def load_keys(self) -> None:
-        load_dotenv()
-        self._keys = {}
-        loaded_count = 0
+        load_dotenv(override=True)
 
-        for i in range(1, 20):
-            raw_key = os.getenv(f"API_KEY_{i}")
-            if not raw_key:
-                continue
+        with self._load_lock:
+            self._keys   = {}
+            loaded_count = 0
 
-            name   = os.getenv(f"API_KEY_{i}_NAME",   f"Key #{i}")
-            scopes = self._parse_scopes(os.getenv(f"API_KEY_{i}_SCOPES", "predict,health"))
-            tier   = self._parse_tier(os.getenv(f"API_KEY_{i}_TIER", "standard"))
-            expiry = self._parse_expiry(os.getenv(f"API_KEY_{i}_EXPIRES_AT"))
-            deprecated = os.getenv(f"API_KEY_{i}_DEPRECATED", "false").lower() == "true"
+            for i in range(1, 20):
+                raw_key = os.getenv(f"API_KEY_{i}")
+                if not raw_key:
+                    continue
 
-            self._register_key(raw_key, name, scopes, tier, expiry, deprecated)
-            loaded_count += 1
+                name       = os.getenv(f"API_KEY_{i}_NAME",   f"Key #{i}")
+                scopes     = self._parse_scopes(os.getenv(f"API_KEY_{i}_SCOPES", "predict,health"))
+                tier       = self._parse_tier(os.getenv(f"API_KEY_{i}_TIER", "standard"))
+                expiry     = self._parse_expiry(os.getenv(f"API_KEY_{i}_EXPIRES_AT"))
+                deprecated = os.getenv(f"API_KEY_{i}_DEPRECATED", "false").lower() == "true"
 
-        if loaded_count == 0:
-            legacy_key = os.getenv("API_KEY")
-            if legacy_key:
-                self._register_key(
-                    raw_key    = legacy_key,
-                    name       = "Default Key (Legacy)",
-                    scopes     = {KeyScope.PREDICT, KeyScope.HEALTH},
-                    tier       = RateLimitTier.STANDARD,
-                )
+                self._register_key(raw_key, name, scopes, tier, expiry, deprecated)
                 loaded_count += 1
-                logger.warning(
-                    "Menggunakan legacy API_KEY. Upgrade ke API_KEY_1/API_KEY_2 "
-                    "untuk fitur enterprise penuh."
+
+            if loaded_count == 0:
+                legacy_key = os.getenv("API_KEY")
+                if legacy_key:
+                    self._register_key(
+                        raw_key = legacy_key,
+                        name    = "Default Key (Legacy)",
+                        scopes  = {KeyScope.PREDICT, KeyScope.HEALTH},
+                        tier    = RateLimitTier.STANDARD,
+                    )
+                    loaded_count += 1
+                    logger.warning(
+                        "Menggunakan legacy API_KEY. Upgrade ke API_KEY_1/API_KEY_2 "
+                        "untuk fitur enterprise penuh."
+                    )
+
+            if loaded_count == 0:
+                logger.critical(
+                    "TIDAK ADA API KEY yang dikonfigurasi! "
+                    "Set API_KEY_1 di environment variables. "
+                    "Semua request akan ditolak."
                 )
+            else:
+                logger.info(f"API Key Manager: {loaded_count} key(s) ter-load.")
 
-        if loaded_count == 0:
-            logger.critical(
-                "TIDAK ADA API KEY yang dikonfigurasi! "
-                "Set API_KEY_1 di environment variables. "
-                "Semua request akan ditolak."
-            )
-        else:
-            logger.info(f"API Key Manager: {loaded_count} key(s) ter-load.")
-
-        self._loaded = True
+            self._loaded = True
 
     def _register_key(
         self,
@@ -189,6 +206,7 @@ class APIKeyManager:
             expires_at = expires_at,
             deprecated = deprecated,
         )
+        # Gunakan key_prefix sebagai index — sudah cukup unik untuk lookup cepat
         self._keys[key_prefix] = record
         logger.info(
             f"  API Key ter-load: prefix={key_prefix} name='{name}' "
@@ -204,17 +222,28 @@ class APIKeyManager:
 
         key_prefix = get_key_prefix(raw_key)
 
-        for record in self._keys.values():
-            if not _verify_key(raw_key, record.key_hash):
-                continue
+        with self._load_lock:
+            keys_snapshot = dict(self._keys)
 
+        # OPTIMASI: Langsung lookup dari dictionary, bukan di-loop! (O(1) vs O(N))
+        record = keys_snapshot.get(key_prefix)
+
+        if record and _verify_key(raw_key, record.key_hash):
             if not record.active:
                 logger.warning(f"Key nonaktif digunakan: {record.key_prefix}")
-                return AuthResult(valid=False, error="API key tidak aktif.", key_prefix=record.key_prefix)
+                return AuthResult(
+                    valid=False,
+                    error="API key tidak aktif.",
+                    key_prefix=record.key_prefix,
+                )
 
             if record.expires_at and time.time() > record.expires_at:
                 logger.warning(f"Key kadaluarsa digunakan: {record.key_prefix}")
-                return AuthResult(valid=False, error="API key sudah kadaluarsa.", key_prefix=record.key_prefix)
+                return AuthResult(
+                    valid=False,
+                    error="API key sudah kadaluarsa.",
+                    key_prefix=record.key_prefix,
+                )
 
             if record.deprecated:
                 logger.warning(
@@ -266,7 +295,6 @@ class APIKeyManager:
 
 
 _key_manager: Optional[APIKeyManager] = None
-
 
 def get_key_manager() -> APIKeyManager:
     global _key_manager

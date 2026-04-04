@@ -22,9 +22,6 @@ Sistem backend AI berbasis **FastAPI** untuk mengklasifikasikan varietas durian 
 - [Keamanan & Autentikasi](#keamanan--autentikasi)
 - [Pipeline Gambar](#pipeline-gambar)
 - [Model Deep Learning](#model-deep-learning)
-- [Pelatihan Model](#pelatihan-model)
-- [Ekspor ke ONNX](#ekspor-ke-onnx)
-- [Evaluasi Model](#evaluasi-model)
 - [Testing](#testing)
 - [Konfigurasi Lanjutan](#konfigurasi-lanjutan)
 
@@ -57,51 +54,60 @@ Request (Gambar)
                                                                  ▼
                                                      ┌──────────────────────┐
                                                      │  EfficientNetB0.onnx │
-                                                     │  (8 Kelas Durian)    │
+                                                     │  (6 Kelas Durian)    │
                                                      └──────────────────────┘
 ```
 
 Setiap request gambar melewati tiga tahap utama:
-1. **Validasi CLIP** — memastikan gambar memang berupa buah durian sebelum diproses lebih lanjut.
-2. **Image Processing** — enhancement otomatis (white balance, CLAHE, sharpening) lalu resize ke 224×224.
-3. **ONNX Inference** — model EfficientNetB0 menghasilkan probabilitas untuk 8 varietas.
+1. **Validasi CLIP** — memastikan gambar memang berupa buah durian sebelum diproses lebih lanjut. CLIP dan Image Processing dijalankan secara **paralel** (`asyncio.gather`) untuk mempercepat response.
+2. **Image Processing** — enhancement otomatis (white balance, CLAHE, sharpening) lalu letterbox resize ke 224×224.
+3. **ONNX Inference** — model EfficientNetB0 menghasilkan probabilitas untuk 6 varietas.
 
 ---
 
 ## Fitur Utama
 
 ### 🚀 High-Performance Inference
-ONNX Runtime digunakan sebagai backend inferensi, menggantikan TensorFlow native di production. Hasilnya: latensi lebih rendah dan footprint memori lebih kecil. Warmup otomatis saat startup memastikan request pertama tidak mengalami cold-start.
+ONNX Runtime digunakan sebagai backend inferensi, menggantikan TensorFlow native di production. Hasilnya: latensi lebih rendah dan footprint memori lebih kecil. Warmup otomatis saat startup memastikan request pertama tidak mengalami cold-start. Session dikonfigurasi dengan graph optimization level `ORT_ENABLE_ALL` dan thread pooling otomatis.
 
 ### 🖼️ Advanced Image Processing Pipeline
 Enhancement gambar berjalan otomatis sebelum inferensi, dapat dikonfigurasi per-fitur melalui `.env`:
 - **Auto White Balance** — koreksi cast warna akibat perbedaan kondisi pencahayaan.
-- **CLAHE** (Contrast Limited Adaptive Histogram Equalization) — meningkatkan kontras lokal tanpa over-expose.
+- **CLAHE** (Contrast Limited Adaptive Histogram Equalization) — meningkatkan kontras lokal tanpa over-expose (diimplementasi via histogram equalization pada channel Y dari YCbCr).
 - **Unsharp Masking** — mempertegas tepi dan tekstur kulit durian.
-- **Letterbox Resize** — menjaga aspek rasio gambar tanpa distorsi saat resize ke 224×224.
+- **Letterbox Resize** — menjaga aspek rasio gambar tanpa distorsi saat resize ke 224×224, dengan padding warna `(114, 114, 114)`.
 
 ### 🛡️ Enterprise Security
 - **API Key Authentication** menggunakan custom header `X-API-Key` atau `Authorization: Bearer`.
-- Mendukung **multiple API keys** (hingga 20) dengan nama, scope, dan tier berbeda.
+- Mendukung **multiple API keys** (hingga 19 key, `API_KEY_1` s.d. `API_KEY_19`) dengan nama, scope, dan tier berbeda.
 - **Zero-downtime key rotation**: tandai key lama sebagai `deprecated`, tambah key baru, hapus lama setelah client update.
+- **Hot-reload keys** via `POST /api/v1/admin/reload-keys` tanpa restart server.
 - **Scopes**: `predict`, `health`, `admin`, `readonly`.
 - **Rate Limiting** berbasis Sliding Window per API key, dengan burst protection (20 req/detik).
+- **Key Hashing**: API key disimpan sebagai hash PBKDF2-HMAC-SHA256 (100.000 iterasi, salt acak 16 byte). Validasi menggunakan `hmac.compare_digest()` untuk mencegah timing attack.
 - Format key: `dk_live_<32char>` untuk production, `dk_test_<32char>` untuk testing.
 
 ### 🔄 Resilient Middleware Stack
 Urutan middleware (dari luar ke dalam):
-1. `PayloadSizeLimitMiddleware` — tolak payload melebihi batas sebelum dibaca.
+1. `PayloadSizeLimitMiddleware` — tolak payload melebihi batas sebelum dibaca (cek `Content-Length` header).
 2. `GZipMiddleware` — kompres respons ≥ 1KB.
-3. `TrustedHostMiddleware` — proteksi host-header injection.
-4. `CORSMiddleware` — whitelist origin.
-5. `RequestLoggingMiddleware` — log setiap request/response dengan `request_id` unik.
-6. `SecurityHeadersMiddleware` — inject security headers (HSTS, CSP, X-Frame-Options, dll.).
+3. `TrustedHostMiddleware` — proteksi host-header injection (aktif jika `ALLOWED_HOSTS_STR` ≠ `*`).
+4. `CORSMiddleware` — whitelist origin, methods `POST/GET/OPTIONS`, expose rate limit & request ID headers.
+5. `RequestLoggingMiddleware` — log setiap request/response dengan `request_id` UUID unik, elapsed time, IP, dan user agent.
+6. `SecurityHeadersMiddleware` — inject 12 security headers (HSTS, CSP, X-Frame-Options, COOP, CORP, dll.).
 
 ### 📋 Structured Logging
-Semua log menggunakan format JSON (`JSONFormatter`) dan mencakup: timestamp UTC, level, nama modul, request_id, dan data tambahan. Audit log terpisah (`audit` logger) mencatat setiap auth success/failure, rate limit exceeded, penggunaan deprecated key, dan file mencurigakan.
+Semua log menggunakan format JSON (`JSONFormatter`) dan mencakup: timestamp UTC, level, nama modul, function, line number, dan data tambahan. `AuditLogger` terpisah (`audit` logger) mencatat setiap auth success/failure, rate limit exceeded, penggunaan deprecated key, dan file mencurigakan.
 
 ### 🤖 CLIP-based Durian Validation
-Sebelum masuk ke model klasifikasi, gambar divalidasi menggunakan **CLIP** (`openai/clip-vit-base-patch32`). Jika gambar bukan durian (misal: foto orang, kendaraan, pemandangan) dengan confidence > 40%, request langsung ditolak dengan pesan jelas.
+Sebelum masuk ke model klasifikasi, gambar divalidasi menggunakan **CLIP** (`openai/clip-vit-base-patch32`) secara zero-shot. Gambar diklasifikasikan terhadap 5 label:
+1. `a photo of a durian fruit`
+2. `a photo of a person`
+3. `a photo of an animal`
+4. `a photo of a vehicle`
+5. `a photo of random objects or scenery`
+
+Jika label non-durian dominan dengan confidence > 40%, request ditolak. CLIP bersifat **fail-open**: jika model gagal dimuat atau error saat inferensi, semua gambar tetap diizinkan.
 
 ---
 
@@ -116,7 +122,7 @@ Sebelum masuk ke model klasifikasi, gambar divalidasi menggunakan **CLIP** (`ope
 | D197 | Musang King  | D197 / Musang King / Raja Kunyit / Mao Shan Wang | Malaysia (Kelantan)         |
 | D200 | Black Thorn  | D200 / Ochee / Duri Hitam / Black Thorn          | Malaysia (Penang)           |
 
-> **Catatan:** Urutan kelas dalam model mengikuti urutan alfabetikal kode: `D101, D13, D197 ,D2 ,D200 ,D24`. Pastikan `CLASS_NAMES` di `.env` sesuai dengan urutan folder saat training.
+> **Catatan:** Urutan kelas dalam model mengikuti urutan indeks di `data/class_indices.json`: `D101(0), D13(1), D197(2), D2(3), D200(4), D24(5)`. Pastikan `CLASS_NAMES` di `.env` sesuai dengan urutan folder saat training (alfabetikal).
 
 ---
 
@@ -128,44 +134,40 @@ backend_ai/
 ├── app/
 │   ├── api/
 │   │   ├── __init__.py          # Router aggregator (prefix /api/v1)
-│   │   ├── health.py            # GET /ping (publik) & GET /health (protected)
+│   │   ├── health.py            # GET /ping, GET /health, POST /admin/reload-keys
 │   │   └── routes.py            # POST /predict — endpoint inferensi utama
 │   ├── core_dependencies.py     # verify_api_key, require_scope (FastAPI dependencies)
 │   └── main.py                  # App factory, lifespan, middleware, exception handlers
 │
 ├── core/
+│   ├── __init__.py              # Re-export settings, logger, semua exception classes
 │   ├── config.py                # Settings (pydantic-settings), VARIETY_MAP, get_variety_info()
-│   ├── exceptions.py            # DurianServiceException dan turunannya (7 tipe)
+│   ├── exceptions.py            # DurianServiceException dan 6 turunannya
 │   ├── logger.py                # JSONFormatter, setup_logging(), get_logger()
-│   ├── middleware.py            # 4 middleware + AuditLogger
-│   ├── rate_limiter.py          # SlidingWindowRateLimiter (async, in-memory)
-│   └── security.py              # APIKeyManager, hash/verify key, AuthResult, KeyScope
+│   ├── middleware.py            # SecurityHeaders, RequestLogging, PayloadSizeLimit, AuditLogger
+│   ├── rate_limiter.py          # SlidingWindowRateLimiter (async, in-memory, background cleanup)
+│   └── security.py             # APIKeyManager, hash/verify key, AuthResult, KeyScope, RateLimitTier
 │
 ├── models/
-│   ├── model_loader.py          # ONNXModelLoader (singleton, thread-safe)
+│   ├── model_loader.py          # ONNXModelLoader (singleton, thread-safe, warmup inference)
 │   └── weights/                 # ← letakkan file .onnx di sini (tidak di-commit)
 │
-├── pipelines/
-│   ├── ai_training_upgraded_2.ipynb  # Notebook training lengkap (Colab-ready)
-│   ├── train.py                 # Script training CLI
-│   ├── export_to_onnx.py        # Konversi .keras → .onnx
-│   └── evaluate.py              # Evaluasi model: confusion matrix, per-class accuracy
-│
 ├── schemas/
-│   ├── request.py               # PredictionRequestBase64 (Pydantic)
-│   └── response.py              # PredictionResponse, HealthResponse, ErrorResponse
+│   ├── __init__.py              # Re-export semua schema
+│   ├── request.py               # PredictionRequestBase64 (Pydantic, auto-strip data URI prefix)
+│   └── response.py              # PredictionResponse, PredictionResult, VarietyScore, HealthResponse, ErrorResponse
 │
 ├── services/
-│   ├── clip_service.py          # CLIPService.is_durian() — validasi zero-shot
-│   ├── image_processor.py       # ImageProcessor.process() — decode + enhance + resize
+│   ├── __init__.py              # Re-export ImageProcessor, InferenceService
+│   ├── clip_service.py          # CLIPService.is_durian() — validasi zero-shot (lazy loading, thread-safe)
+│   ├── image_processor.py       # ImageProcessor.process() — decode + enhance + letterbox resize
 │   └── inference_service.py     # InferenceService.predict() — jalankan ONNX + format response
 │
 ├── tests/
-│   ├── test_api.py              # Unit & integration test endpoint FastAPI
-│   └── test_inference.py        # Unit test ImageProcessor & InferenceService
+│   └── test_clip_service.py     # Unit test CLIPService (lazy loading, thread safety, graceful degradation)
 │
 ├── data/
-│   └── class_indices.json       # Pemetaan index → kode kelas
+│   └── class_indices.json       # Pemetaan index → kode kelas (6 kelas)
 │
 ├── .env.example                 # Template konfigurasi (wajib dibaca sebelum setup)
 ├── .gitignore
@@ -179,8 +181,8 @@ backend_ai/
 
 - **Python 3.9+**
 - **Virtual environment** (sangat direkomendasikan)
-- **File model ONNX** yang sudah terlatih (lihat bagian [Pelatihan Model](#pelatihan-model) atau [Ekspor ke ONNX](#ekspor-ke-onnx))
-- GPU opsional — ONNX Runtime otomatis menggunakan CUDA jika tersedia
+- **File model ONNX** yang sudah terlatih (`.onnx` format)
+- GPU opsional — ONNX Runtime otomatis menggunakan CUDA jika tersedia (`CUDAExecutionProvider`)
 
 ---
 
@@ -220,7 +222,7 @@ Buka `.env` dan sesuaikan nilai-nilai berikut:
 MODEL_PATH=models/weights/efficientnet_b0.onnx
 
 # Urutan kelas WAJIB sesuai urutan folder training (alfabetikal)
-CLASS_NAMES=D101,D13,D197,D198,D2,D200,D24,D88
+CLASS_NAMES=D101,D13,D197,D2,D200,D24
 
 # Generate API key baru:
 # python -c "import secrets; print('dk_live_' + secrets.token_urlsafe(24))"
@@ -246,11 +248,6 @@ Letakkan file `.onnx` hasil training ke direktori `models/weights/`:
 ```bash
 # Contoh jika model sudah ada
 cp /path/to/efficientnet_b0.onnx models/weights/
-
-# Atau jalankan pipeline export jika hanya punya .keras
-python pipelines/export_to_onnx.py \
-    --input models/weights/best_model.keras \
-    --output models/weights/efficientnet_b0.onnx
 ```
 
 ---
@@ -281,6 +278,13 @@ Cek status API tanpa auth:
 GET http://localhost:8000/api/v1/ping
 ```
 
+### Info Root Endpoint
+
+```
+GET http://localhost:8000/
+```
+Response berisi overview endpoint dan status service (tanpa auth).
+
 ---
 
 ## Referensi API
@@ -304,7 +308,7 @@ Liveness check publik tanpa autentikasi. Digunakan untuk load balancer.
 
 ### `GET /api/v1/health`
 
-Status detail service. Memerlukan API key dengan scope `health` atau `admin`.
+Status detail service. Memerlukan API key valid (scope apapun).
 
 **Headers:**
 ```
@@ -321,15 +325,20 @@ X-API-Key: dk_live_xxx
   "uptime_seconds": 3600,
   "memory_usage_mb": 512.3,
   "cpu_percent": 2.1,
-  "rate_limiter_stats": { "tracked_identifiers": 12 },
+  "rate_limiter_stats": {
+    "tracked_identifiers": 12,
+    "cleanup_task_active": 1
+  },
   "config_summary": {
-    "num_classes": 8,
+    "num_classes": 6,
     "image_size": 224,
     "enhancement": true,
     "max_file_size_mb": 10
   }
 }
 ```
+
+> **Catatan:** Status `"degraded"` dikembalikan jika model ONNX belum ter-load.
 
 ---
 
@@ -352,33 +361,41 @@ curl -X POST http://localhost:8000/api/v1/predict \
   -d '{"image_base64": "/9j/4AAQ...", "filename": "durian.jpg"}'
 ```
 
-> Tidak boleh mengirim keduanya sekaligus.
+> Tidak boleh mengirim keduanya sekaligus. Data URI prefix (`data:image/jpeg;base64,`) otomatis dicopot oleh validator.
 
 **Response Sukses (200):**
 ```json
 {
   "success": true,
   "prediction": {
-    "variety_code": "D200",
+    "variety_code": "D197",
     "variety_name": "Musang King",
-    "local_name": "D200 / Musang King / Raja Kunyit / Mao Shan Wang",
-    "origin": "Malaysia (Kelantan / Gua Musang)",
-    "description": "Raja durian Malaysia dengan daging kuning-emas yang tebal...",
+    "local_name": "D197 / Musang King / Raja Kunyit / Mao Shan Wang",
+    "origin": "Malaysia (Kelantan)",
+    "description": "Raja durian Malaysia dengan daging kuning-emas tebal...",
     "confidence_score": 0.9231
   },
   "all_varieties": [
-    { "variety_code": "D200", "variety_name": "Musang King", "confidence_score": 0.9231 },
-    { "variety_code": "D197", "variety_name": "Golden Phoenix", "confidence_score": 0.0412 }
+    { "variety_code": "D197", "variety_name": "Musang King", "confidence_score": 0.9231 },
+    { "variety_code": "D200", "variety_name": "Black Thorn", "confidence_score": 0.0412 },
+    { "variety_code": "D24", "variety_name": "Sultan", "confidence_score": 0.0201 },
+    { "variety_code": "D101", "variety_name": "Muar Gold", "confidence_score": 0.0098 },
+    { "variety_code": "D13", "variety_name": "Golden Bun", "confidence_score": 0.0041 },
+    { "variety_code": "D2", "variety_name": "Dato Nina", "confidence_score": 0.0017 }
   ],
   "confidence_scores": {
     "Musang King": 0.9231,
-    "Golden Phoenix": 0.0412
+    "Black Thorn": 0.0412,
+    "Sultan": 0.0201,
+    "Muar Gold": 0.0098,
+    "Golden Bun": 0.0041,
+    "Dato Nina": 0.0017
   },
   "image_enhanced": true,
   "inference_time_ms": 18.5,
   "preprocessing_time_ms": 12.3,
   "model_version": "1.0.0",
-  "request_id": "a3b1c2d4"
+  "request_id": "a3b1c2d4-..."
 }
 ```
 
@@ -386,20 +403,47 @@ curl -X POST http://localhost:8000/api/v1/predict \
 
 | Status | Kode Error | Penyebab |
 |--------|-----------|---------|
-| 400 | `InvalidImageException` | File kosong atau bukan gambar valid |
-| 400 | - | Kirim file dan JSON sekaligus |
+| 400 | `InvalidImageException` | File kosong, bukan gambar valid, atau bukan gambar durian (CLIP) |
+| 400 | - | Kirim file dan JSON sekaligus / data gambar kosong |
 | 401 | - | Tidak ada API key |
 | 403 | - | API key invalid atau scope tidak cukup |
 | 413 | `FileTooLargeException` | File melebihi batas (default 10MB) |
-| 415 | `UnsupportedFileTypeException` | Ekstensi tidak didukung (bukan jpg/png/webp) |
+| 415 | `UnsupportedFileTypeException` | Ekstensi tidak didukung (bukan jpg/jpeg/png/webp) |
 | 422 | `ImageProcessingException` | Gagal preprocessing gambar |
 | 429 | - | Rate limit terlampaui |
+| 500 | `InferenceException` | Gagal menjalankan inferensi model |
 | 503 | `ModelNotLoadedException` | Model belum ter-load saat startup |
 
 **Response Headers Tambahan:**
-- `X-Request-ID` — ID unik per request untuk tracing
-- `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` — info rate limit
+- `X-Request-ID` — UUID unik per request untuk tracing
+- `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, `X-RateLimit-Policy` — info rate limit
 - `Warning: 299` — muncul jika API key sedang dalam status deprecated
+- `X-API-Version` — versi API saat ini
+
+---
+
+### `POST /api/v1/admin/reload-keys`
+
+Hot-reload API keys dari environment variables tanpa restart server. Memerlukan scope `admin`.
+
+**Headers:**
+```
+X-API-Key: dk_live_xxx  (key dengan scope admin)
+```
+
+**Response Sukses:**
+```json
+{
+  "success": true,
+  "message": "API keys dan settings berhasil di-reload.",
+  "key_count": 3,
+  "reloaded_by": "dk_live_xxxx...",
+  "app_version": "1.0.0",
+  "settings_refreshed": true
+}
+```
+
+> Endpoint ini menjalankan `load_dotenv(override=True)` sehingga perubahan di file `.env` langsung diterapkan. `Settings` cache juga di-refresh.
 
 ---
 
@@ -431,10 +475,11 @@ python -c "import secrets; print('dk_live_' + secrets.token_urlsafe(24))"
 
 ```bash
 # 1. Generate key baru dan tambahkan ke .env sebagai API_KEY_4
-# 2. Tandai key lama sebagai deprecated
+# 2. Panggil POST /api/v1/admin/reload-keys (scope admin)
+# 3. Tandai key lama sebagai deprecated:
 API_KEY_1_DEPRECATED=true
-
-# 3. Setelah semua client update ke key baru, hapus API_KEY_1 dari .env
+# 4. Panggil reload-keys lagi
+# 5. Setelah semua client update ke key baru, hapus API_KEY_1 dari .env
 ```
 
 Selama `deprecated=true`, key lama masih bisa digunakan tapi response akan menyertakan `Warning: 299` header.
@@ -446,13 +491,23 @@ Selama `deprecated=true`, key lama masih bisa digunakan tapi response akan menye
 | `free` | 60 req/menit | 20 req/detik |
 | `standard` | 300 req/menit | 20 req/detik |
 | `premium` | 1000 req/menit | 20 req/detik |
-| `unlimited` | Tidak terbatas | 20 req/detik |
+| `unlimited` | ~Tidak terbatas | 20 req/detik |
 
 Identifier rate limit: `key:<prefix>` untuk autentikasi sukses, `ip:<client_ip>` untuk fallback (limit 30/menit).
 
+Background cleanup task berjalan setiap 5 menit untuk menghapus stale entries (tidak aktif > 10 menit).
+
 ### Keamanan Penyimpanan Key
 
-API key **tidak disimpan plaintext** di memori. Sistem menggunakan **PBKDF2-HMAC-SHA256** dengan 100.000 iterasi dan salt acak 16 byte. Perbandingan hash menggunakan `hmac.compare_digest()` untuk mencegah timing attack.
+API key **tidak disimpan plaintext** di memori. Sistem menggunakan **PBKDF2-HMAC-SHA256** dengan 100.000 iterasi dan salt acak 16 byte. Perbandingan hash menggunakan `hmac.compare_digest()` untuk mencegah timing attack. Lookup menggunakan key prefix sebagai index dictionary untuk performa O(1).
+
+### Key Expiration (Opsional)
+
+Setiap key dapat dikonfigurasi dengan waktu kadaluarsa menggunakan Unix timestamp:
+
+```env
+API_KEY_1_EXPIRES_AT=1767225600
+```
 
 ---
 
@@ -461,31 +516,41 @@ API key **tidak disimpan plaintext** di memori. Sistem menggunakan **PBKDF2-HMAC
 Setiap gambar melewati pipeline berikut di `ImageProcessor.process()`:
 
 ```
-Input (bytes / base64)
+Input (bytes / base64 string)
         │
         ▼
-   Decode & Verify      ← validasi header magic bytes
+   Decode & Verify      ← PIL verify() + re-open
         │
         ▼
   Konversi ke RGB       ← RGBA, grayscale, dll → RGB
         │
         ▼
-  Letterbox Resize      ← resize ke 224×224 dengan padding, aspek rasio terjaga
+  Letterbox Resize      ← resize ke 224×224 dengan padding (114,114,114), aspek rasio terjaga
         │
         ▼
  Enhancement (opsional) ← dikendalikan ENABLE_ENHANCEMENT di .env
-    ├── Auto White Balance
-    ├── CLAHE
-    └── Unsharp Masking
+    ├── Auto White Balance    (gray world assumption)
+    ├── CLAHE                 (histogram EQ pada Y channel YCbCr, alpha blending)
+    └── Unsharp Masking       (GaussianBlur radius=2, amount=0.45)
         │
         ▼
   Output: float32       ← shape (1, 224, 224, 3), range [0, 255]
   numpy tensor          ← EfficientNetB0 menangani normalisasi internal
 ```
 
-> **Penting:** Tensor output berada dalam range **[0, 255]**, BUKAN [0, 1]. EfficientNetB0 yang digunakan `include_preprocessing=True` (default) menangani normalisasi internal saat training maupun inferensi.
+> **Penting:** Tensor output berada dalam range **[0, 255]**, BUKAN [0, 1]. EfficientNetB0 yang memiliki preprocessing layer internal menangani normalisasi saat inferensi.
 
-Enhancement dapat dikonfigurasi per-komponen:
+### Magic Bytes Validation
+
+Sebelum processing, file upload divalidasi menggunakan magic bytes:
+- **JPEG**: `\xff\xd8\xff`
+- **PNG**: `\x89PNG\r\n\x1a\n`
+- **WebP**: `RIFF....WEBP`
+
+File yang ekstensinya tidak cocok dengan magic bytes akan ditolak dan di-log sebagai `SUSPICIOUS_FILE`.
+
+### Konfigurasi Enhancement
+
 ```env
 ENABLE_ENHANCEMENT=True
 ENABLE_WHITE_BALANCE=True
@@ -500,119 +565,34 @@ CLAHE_CLIP_LIMIT=2.0   # Kekuatan CLAHE: 1.0–4.0
 
 ### Arsitektur
 
+Model menggunakan **EfficientNetB0** sebagai backbone dengan custom classification head:
+
 ```
 Input (224×224×3)
-    → GPU Augmentation (RandomFlip, Rotation, Zoom, Translate, Contrast, Brightness, GaussianNoise)
-    → EfficientNetB0 Backbone (ImageNet pretrained, frozen saat Phase 1)
+    → EfficientNetB0 Backbone (ImageNet pretrained)
     → GlobalAveragePooling2D
-    → BN → Dropout(0.50)
-    → Dense(512, GELU, L2=2e-4) → BN → Dropout(0.40)
-    → Dense(256, GELU, L2=2e-4) → BN → Dropout(0.275)
-    → Dense(128, GELU, L2=1e-4) → BN → Dropout(0.15)
-    → Dense(8, Softmax, float32)
+    → Dense Head → Dense(6, Softmax)
 ```
 
-Total parameter: ~4.88 juta | Trainable (Phase 1): ~825 ribu
+Output: probabilitas untuk 6 kelas durian (D101, D13, D197, D2, D200, D24).
 
-### Teknik Anti-Overfitting
+### ONNX Model
 
-- **Deduplication** via perceptual hash (pHash, threshold ≤ 8) sebelum training.
-- **MixUp + CutMix** (50/50 per batch) untuk augmentasi data.
-- **Label Smoothing** (ε = 0.12).
-- **Cosine Annealing LR** di Phase 2.
-- **Class Weighting** otomatis untuk dataset imbalanced.
-- **OverfitMonitorCallback** — deteksi real-time gap train/val > 0.12.
+Model disimpan dalam format **ONNX** (Open Neural Network Exchange) untuk:
+- Inferensi lintas platform tanpa dependensi TensorFlow
+- Optimasi graph otomatis via ONNX Runtime
+- Dukungan GPU (CUDA) dan CPU otomatis
 
-### Hasil Training (v2)
+Spesifikasi model:
+- Input: `float32[1, 224, 224, 3]`
+- Output: `float32[1, 6]` (probabilitas softmax)
+- Ukuran file: ~18–20 MB (float32)
 
-| Fase | Best Val Accuracy |
-|------|-------------------|
-| Phase 1 (Feature Extraction, 20 epoch) | 55.44% |
-| Phase 2 (Fine-Tuning, 45 epoch) | 72.12% |
-| **TTA (n=5 augmentasi)** | **77.32%** |
+### Auto-Softmax
 
----
-
-## Pelatihan Model
-
-### Menggunakan Notebook (Direkomendasikan)
-
-Buka `pipelines/ai_training_upgraded_2.ipynb` di Google Colab (disarankan dengan GPU T4):
-
-1. Upload dataset ke `/content/raw/` dengan struktur:
-   ```
-   raw/
-   ├── train/
-   │   ├── D101/  ← nama folder = kode kelas
-   │   ├── D13/
-   │   └── ...
-   ├── valid/
-   │   └── ...
-   └── test/       ← opsional
-       └── ...
-   ```
-
-2. Jalankan semua cell secara berurutan. Notebook akan:
-   - Mendeteksi dan menghapus gambar duplikat otomatis.
-   - Melatih model dalam dua fase.
-   - Menghasilkan confusion matrix, Grad-CAM, training history.
-   - Mengekspor model ke `.keras` dan TF SavedModel.
-   - Mengemas semua output ke `.zip` untuk diunduh.
-
-### Menggunakan Script CLI
-
-```bash
-python pipelines/train.py \
-    --data_dir data/raw \
-    --epochs_p1 20 \
-    --epochs_p2 50 \
-    --batch_size 32 \
-    --mixed_prec     # tambahkan jika menggunakan GPU
-```
-
----
-
-## Ekspor ke ONNX
-
-Setelah training selesai, konversi model ke ONNX:
-
-```bash
-python pipelines/export_to_onnx.py \
-    --input  models/weights/best_model.keras \
-    --output models/weights/efficientnet_b0.onnx \
-    --opset  17
-```
-
-Script ini secara otomatis:
-1. Memuat model `.keras` dan mengkonversi ke pure `float32` (menghapus `mixed_float16`).
-2. Membangun **inference-only model** — augmentasi layer dicopot, hanya backbone + head tersisa.
-3. Mengonversi ke ONNX via `tf2onnx`.
-4. Memverifikasi output model menggunakan ONNX Runtime (warmup inference + cek output shape).
-
-> Model ONNX yang benar berukuran ~18–20 MB (float32). Jika ~10 MB, ada masalah casting float16.
-
----
-
-## Evaluasi Model
-
-```bash
-# Evaluasi standar
-python pipelines/evaluate.py \
-    --model    models/weights/best_model.keras \
-    --test_dir data/raw/test
-
-# Dengan Test-Time Augmentation (akurasi lebih tinggi)
-python pipelines/evaluate.py \
-    --model    models/weights/best_model.keras \
-    --test_dir data/raw/test \
-    --tta \
-    --n_tta 5
-```
-
-Output yang dihasilkan (disimpan di `models/evaluation/`):
-- `confusion_matrix_normalized.png` — heatmap confusion matrix ternormalisasi
-- `confusion_matrix_counts.png` — heatmap dengan raw count
-- `per_class_accuracy.png` — bar chart akurasi per kelas
+`InferenceService` secara otomatis mendeteksi dan menangani output model:
+- Jika jumlah probabilitas ≈ 1.0 → gunakan langsung (output sudah softmax)
+- Jika jumlah probabilitas jauh dari 1.0 → terapkan softmax otomatis (output masih logit)
 
 ---
 
@@ -626,17 +606,19 @@ pytest tests/
 pytest tests/ -v
 
 # Test per file
-pytest tests/test_api.py -v
-pytest tests/test_inference.py -v
+pytest tests/test_clip_service.py -v
 ```
 
-Cakupan test meliputi:
+### Cakupan Test CLIP Service
 
 | Area | Yang Diuji |
-|------|-----------|
-| **API Endpoint** | Health check, autentikasi (missing/invalid key), validasi input (ekstensi, ukuran, format), response schema, semua 8 kelas di confidence_scores |
-| **ImageProcessor** | Output shape (1,224,224,3), dtype float32, range [0,255], konversi mode (RGBA/grayscale→RGB), decode base64 dengan/tanpa prefix & padding, error handling |
-| **InferenceService** | Top class benar, tidak ada double softmax, auto-softmax untuk logit output, class mismatch exception, invalid input shape |
+|------|-----------| 
+| **Lazy Loading** | Model tidak dimuat saat import, dimuat saat `warmup()` / `is_durian()` pertama kali, `_load_attempted` flag mencegah reload berulang |
+| **Graceful Degradation** | CLIP tidak tersedia → izinkan semua gambar (fail-open), kegagalan loading → `_model` tetap `None`, error saat inference → return `True` |
+| **Klasifikasi** | Durian probability tinggi → `True`, non-durian dominan (>0.40) → `False`, non-durian rendah (≤0.40) → `True` (fail-open) |
+| **Input Handling** | Menerima `bytes` dan `base64` string, gambar corrupt → fail-safe (return `True`) |
+| **Thread Safety** | 10 thread simultan memanggil `warmup()` → model hanya dimuat 1x (double-checked locking) |
+| **Warmup Integration** | `warmup()` selalu return `bool` (tidak pernah raise exception), idempotent (aman dipanggil berulang) |
 
 ---
 
@@ -651,12 +633,18 @@ Semua konfigurasi dikelola via `.env`. Lihat `.env.example` untuk daftar lengkap
 | `DEBUG` | `False` | Aktifkan `/docs`, `/redoc`, `/openapi.json` |
 | `LOG_LEVEL` | `INFO` | DEBUG/INFO/WARNING/ERROR/CRITICAL |
 | `MODEL_PATH` | `models/weights/efficientnet_b0.onnx` | Path ke file model |
-| `CLASS_NAMES` | `D101,...` | Urutan kelas (WAJIB alfabetikal) |
+| `CLASS_NAMES` | `D101,D13,D197,D2,D200,D24` | Urutan kelas (WAJIB sesuai folder training) |
 | `IMAGE_SIZE` | `224` | Ukuran input model (32–1024) |
 | `MAX_FILE_SIZE_MB` | `10` | Batas ukuran file upload |
+| `ALLOWED_EXTENSIONS` | `jpg,jpeg,png,webp` | Ekstensi file yang diizinkan |
 | `ENABLE_ENHANCEMENT` | `True` | Master switch enhancement pipeline |
-| `CORS_ORIGINS_STR` | — | Comma-separated allowed origins |
+| `ENABLE_WHITE_BALANCE` | `True` | Auto white balance |
+| `ENABLE_CLAHE` | `True` | Contrast adaptive histogram equalization |
+| `ENABLE_SHARPENING` | `True` | Unsharp masking |
+| `CLAHE_CLIP_LIMIT` | `2.0` | Kekuatan CLAHE (1.0–4.0) |
+| `CORS_ORIGINS_STR` | `http://localhost:3000,...` | Comma-separated allowed origins |
 | `ALLOWED_HOSTS_STR` | `*` | Allowed hosts (anti host-header injection) |
+| `API_KEY_REQUIRED` | `True` | Wajibkan API key |
 
 ### Environment per Deployment
 
@@ -673,6 +661,20 @@ LOG_LEVEL=INFO
 CORS_ORIGINS_STR=https://app.example.com
 ALLOWED_HOSTS_STR=api.example.com,*.example.com
 ```
+
+### Exception Hierarchy
+
+Semua custom exception mewarisi `DurianServiceException`:
+
+| Exception | HTTP Status | Kasus |
+|-----------|------------|-------|
+| `ModelNotLoadedException` | 503 | Model belum siap |
+| `ModelLoadException` | 500 | Gagal memuat model |
+| `InvalidImageException` | 400 | File bukan gambar valid |
+| `UnsupportedFileTypeException` | 415 | Ekstensi tidak didukung |
+| `FileTooLargeException` | 413 | Ukuran file melebihi batas |
+| `ImageProcessingException` | 422 | Gagal preprocessing |
+| `InferenceException` | 500 | Gagal menjalankan model |
 
 ---
 

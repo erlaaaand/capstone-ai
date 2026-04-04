@@ -32,12 +32,6 @@ VARIETY_MAP: Dict[str, VarietyInfo] = {
         origin="Malaysia (Perak / Selangor)",
         description="Varietas legendaris dengan daging kuning pucat hingga krem. Rasa pahit-manis yang kaya. Ciri fisik luarnya memiliki duri yang cukup tajam dan rapat dengan bentuk cenderung oval.",
     ),
-    "D88": VarietyInfo(
-        display_name="Darling",
-        local_name="D88 / Darling / Bangkok 8",
-        origin="Malaysia",
-        description="Durian dengan daging berwarna kuning pucat. Memiliki kombinasi rasa manis sedang dengan tekstur yang lembut.",
-    ),
     "D101": VarietyInfo(
         display_name="Muar Gold",
         local_name="D101 / Muar Gold / Johor Mas",
@@ -49,12 +43,6 @@ VARIETY_MAP: Dict[str, VarietyInfo] = {
         local_name="D197 / Musang King / Raja Kunyit / Mao Shan Wang",
         origin="Malaysia (Kelantan)",
         description="Raja durian Malaysia dengan daging kuning-emas tebal. Rasa kaya manis-pahit yang kompleks. Ciri khas luarnya memiliki pola bintang (star-shape) botak di bagian bawah dan duri berbentuk piramida.",
-    ),
-    "D198": VarietyInfo(
-        display_name="Golden Phoenix",
-        local_name="D198 / Jin Feng / Golden Phoenix",
-        origin="Malaysia (Johor)",
-        description="Daging berwarna kuning pucat hingga putih dengan rasa dominan pahit tajam dan tekstur berair namun lembut. Ciri luarnya memiliki duri yang tajam, tipis, dan rapat menyerupai jarum.",
     ),
     "D200": VarietyInfo(
         display_name="Black Thorn",
@@ -96,7 +84,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     MODEL_PATH:  str = "models/weights/efficientnet_b0.onnx"
-    CLASS_NAMES: str = "D101,D13,D197,D198,D2,D200,D24,D88"
+    CLASS_NAMES: str = "D101,D13,D197,D2,D200,D24"
 
     IMAGE_SIZE: int = 224
 

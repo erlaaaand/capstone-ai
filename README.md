@@ -107,16 +107,14 @@ Sebelum masuk ke model klasifikasi, gambar divalidasi menggunakan **CLIP** (`ope
 
 ## Varietas Durian yang Didukung
 
-| Kode | Nama Populer | Nama Lokal | Asal |
-|------|-------------|------------|------|
-| D197 | Golden Phoenix | D197 / Jin Feng / Golden Phoenix | Malaysia |
-| D24 | Sultan | D24 / Sultan | Malaysia |
-| D198 | Red Prawn | D198 / Udang Merah / Red Prawn | Penang, Malaysia |
-| D200 | Musang King | D200 / Musang King / Raja Kunyit / Mao Shan Wang | Kelantan / Gua Musang |
-| D101 | Nyuk Kun | D101 / Nyuk Kun | Penang, Malaysia |
-| D13 | Kuk San | D13 / Kuk San | Malaysia Barat |
-| D2 | Chanee | D2 / Chanee | Thailand / Malaysia Utara |
-| D88 | Tekka | D88 / Tekka | Johor, Malaysia |
+| Kode | Nama Populer | Nama Lokal                                       | Asal                        |
+| ---- | ------------ | ------------------------------------------------ | --------------------------- |
+| D2   | Dato Nina    | D2 / Dato Nina                                   | Malaysia (Melaka)           |
+| D13  | Golden Bun   | D13 / Golden Bun                                 | Malaysia (Johor)            |
+| D24  | Sultan       | D24 / Sultan / Bukit Merah                       | Malaysia (Perak / Selangor) |
+| D101 | Muar Gold    | D101 / Muar Gold / Johor Mas                     | Malaysia (Johor)            |
+| D197 | Musang King  | D197 / Musang King / Raja Kunyit / Mao Shan Wang | Malaysia (Kelantan)         |
+| D200 | Black Thorn  | D200 / Ochee / Duri Hitam / Black Thorn          | Malaysia (Penang)           |
 
 > **Catatan:** Urutan kelas dalam model mengikuti urutan alfabetikal kode: `D101, D13, D197, D198, D2, D200, D24, D88`. Pastikan `CLASS_NAMES` di `.env` sesuai dengan urutan folder saat training.
 
@@ -677,7 +675,5 @@ ALLOWED_HOSTS_STR=api.example.com,*.example.com
 ```
 
 ---
-
-## Lisensi
 
 Developed by **Erland Agsya**.

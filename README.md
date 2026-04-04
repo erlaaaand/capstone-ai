@@ -116,7 +116,7 @@ Sebelum masuk ke model klasifikasi, gambar divalidasi menggunakan **CLIP** (`ope
 | D197 | Musang King  | D197 / Musang King / Raja Kunyit / Mao Shan Wang | Malaysia (Kelantan)         |
 | D200 | Black Thorn  | D200 / Ochee / Duri Hitam / Black Thorn          | Malaysia (Penang)           |
 
-> **Catatan:** Urutan kelas dalam model mengikuti urutan alfabetikal kode: `D101, D13, D197, D198, D2, D200, D24, D88`. Pastikan `CLASS_NAMES` di `.env` sesuai dengan urutan folder saat training.
+> **Catatan:** Urutan kelas dalam model mengikuti urutan alfabetikal kode: `D101, D13, D197 ,D2 ,D200 ,D24`. Pastikan `CLASS_NAMES` di `.env` sesuai dengan urutan folder saat training.
 
 ---
 

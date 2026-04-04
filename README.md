@@ -189,7 +189,7 @@ backend_ai/
 ### 1. Clone & Buat Virtual Environment
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/erlaaaand/capstone-ai.git
 cd backend_ai
 
 python -m venv venv

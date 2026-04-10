@@ -7,7 +7,7 @@
 
 ---
 
-🌐 **Bahasa / Language:** [![🇮🇩 Bahasa Indonesia](https://img.shields.io/badge/🇮🇩_Bahasa_Indonesia-aktif-blue?style=flat-square)](./README.md) [![🇬🇧 English](https://img.shields.io/badge/🇬🇧_English-tersedia-lightgrey?style=flat-square)](./README.en.md)
+🌐 **Bahasa / Language:** [![🇮🇩 Bahasa Indonesia](https://img.shields.io/badge/🇮🇩_Bahasa_Indonesia-aktif-blue?style=flat-square)](./README.md) [![🇬🇧 English](https://img.shields.io/badge/🇬🇧_English-available-lightgrey?style=flat-square)](./README.en.md)
 
 ---
 

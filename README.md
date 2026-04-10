@@ -5,6 +5,12 @@
 ![ONNX Runtime](https://img.shields.io/badge/ONNX_Runtime-005C8A?style=for-the-badge&logo=onnx&logoColor=white)
 ![TensorFlow](https://img.shields.io/badge/TensorFlow-FF6F00?style=for-the-badge&logo=tensorflow&logoColor=white)
 
+---
+
+🌐 **Bahasa / Language:** [![🇮🇩 Bahasa Indonesia](https://img.shields.io/badge/🇮🇩_Bahasa_Indonesia-aktif-blue?style=flat-square)](./README.md) [![🇬🇧 English](https://img.shields.io/badge/🇬🇧_English-tersedia-lightgrey?style=flat-square)](./README.en.md)
+
+---
+
 Sistem backend AI berbasis **FastAPI** untuk mengklasifikasikan varietas durian dari gambar menggunakan deep learning. Model **EfficientNetB0** diekspor ke format **ONNX** untuk inferensi berperforma tinggi. Dilengkapi lapisan keamanan enterprise, pipeline enhancement gambar otomatis, dan validasi gambar berbasis CLIP (zero-shot).
 
 ---

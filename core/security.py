@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import os
@@ -39,6 +40,56 @@ TIER_LIMITS: Dict[RateLimitTier, int] = {
 KEY_PREFIX_LIVE = "dk_live_"
 KEY_PREFIX_TEST = "dk_test_"
 KEY_PREFIX_LEN  = 10
+
+_PBKDF2_FAIL_WINDOW   = 60    # seconds — rolling window
+_PBKDF2_FAIL_MAX      = 10    # max failed attempts within window before lockout
+_PBKDF2_LOCKOUT_SEC   = 30    # lockout duration in seconds
+
+
+@dataclass
+class _FailRecord:
+    timestamps: List[float] = field(default_factory=list)
+    locked_until: float     = 0.0
+
+
+class _PBKDF2GuardState:
+
+    _lock:    threading.Lock
+    _records: Dict[str, _FailRecord]
+
+    def __init__(self) -> None:
+        self._lock    = threading.Lock()
+        self._records = {}
+
+    def is_locked(self, prefix: str) -> bool:
+        with self._lock:
+            rec = self._records.get(prefix)
+            if rec is None:
+                return False
+            if rec.locked_until and time.time() < rec.locked_until:
+                return True
+            return False
+
+    def record_failure(self, prefix: str) -> None:
+        now = time.time()
+        with self._lock:
+            rec = self._records.setdefault(prefix, _FailRecord())
+            cutoff = now - _PBKDF2_FAIL_WINDOW
+            rec.timestamps = [t for t in rec.timestamps if t >= cutoff]
+            rec.timestamps.append(now)
+            if len(rec.timestamps) >= _PBKDF2_FAIL_MAX:
+                rec.locked_until = now + _PBKDF2_LOCKOUT_SEC
+                logger.warning(
+                    f"[Security] PBKDF2 brute-force guard activated for "
+                    f"prefix={prefix!r} — locked {_PBKDF2_LOCKOUT_SEC}s."
+                )
+
+    def record_success(self, prefix: str) -> None:
+        with self._lock:
+            self._records.pop(prefix, None)
+
+
+_pbkdf2_guard = _PBKDF2GuardState()
 
 
 @dataclass
@@ -113,29 +164,24 @@ def get_key_prefix(raw_key: str) -> str:
 
 
 class APIKeyManager:
-    _singleton_lock: threading.Lock          = threading.Lock()
+    _singleton_lock: threading.Lock            = threading.Lock()
     _instance:       Optional["APIKeyManager"] = None
 
-    # Deklarasi tipe level kelas (Mengatasi warning Pylance)
-    _keys:      Dict[str, APIKeyRecord]
+    _keys:      Dict[str, List[APIKeyRecord]]
     _loaded:    bool
     _load_lock: threading.RLock
 
     def __new__(cls) -> "APIKeyManager":
-        # Fast path — sudah ada instance
         if cls._instance is not None:
             return cls._instance
 
         with cls._singleton_lock:
             if cls._instance is None:
                 inst = super().__new__(cls)
-
-                # Inisialisasi tanpa anotasi inline (Mengatasi warning Pylance)
                 inst._keys      = {}
                 inst._loaded    = False
                 inst._load_lock = threading.RLock()
-
-                cls._instance = inst
+                cls._instance   = inst
 
         return cls._instance
 
@@ -206,12 +252,22 @@ class APIKeyManager:
             expires_at = expires_at,
             deprecated = deprecated,
         )
-        # Gunakan key_prefix sebagai index — sudah cukup unik untuk lookup cepat
-        self._keys[key_prefix] = record
+
+        bucket = self._keys.setdefault(key_prefix, [])
+        bucket.append(record)
+
+        if len(bucket) > 1:
+            logger.warning(
+                f"  Prefix collision terdeteksi: prefix={key_prefix!r} "
+                f"sekarang memiliki {len(bucket)} key. "
+                "Pertimbangkan key dengan prefix unik untuk performa optimal."
+            )
+
         logger.info(
             f"  API Key ter-load: prefix={key_prefix} name='{name}' "
             f"scopes={[s.value for s in scopes]} tier={tier.value}"
         )
+
 
     def validate(self, raw_key: str) -> AuthResult:
         if not self._loaded:
@@ -222,45 +278,107 @@ class APIKeyManager:
 
         key_prefix = get_key_prefix(raw_key)
 
+        if _pbkdf2_guard.is_locked(key_prefix):
+            logger.warning(
+                f"[Security] Request ditolak karena prefix terkunci (brute-force): "
+                f"prefix={key_prefix!r}"
+            )
+            return AuthResult(
+                valid=False,
+                error="Terlalu banyak percobaan autentikasi gagal. Coba lagi nanti.",
+                key_prefix=key_prefix,
+            )
+
         with self._load_lock:
             keys_snapshot = dict(self._keys)
 
-        # OPTIMASI: Langsung lookup dari dictionary, bukan di-loop! (O(1) vs O(N))
-        record = keys_snapshot.get(key_prefix)
+        candidates = keys_snapshot.get(key_prefix, [])
 
-        if record and _verify_key(raw_key, record.key_hash):
-            if not record.active:
-                logger.warning(f"Key nonaktif digunakan: {record.key_prefix}")
-                return AuthResult(
-                    valid=False,
-                    error="API key tidak aktif.",
-                    key_prefix=record.key_prefix,
-                )
+        for record in candidates:
+            if _verify_key(raw_key, record.key_hash):
+                _pbkdf2_guard.record_success(key_prefix)
+                return self._build_auth_result(record)
 
-            if record.expires_at and time.time() > record.expires_at:
-                logger.warning(f"Key kadaluarsa digunakan: {record.key_prefix}")
-                return AuthResult(
-                    valid=False,
-                    error="API key sudah kadaluarsa.",
-                    key_prefix=record.key_prefix,
-                )
-
-            if record.deprecated:
-                logger.warning(
-                    f"Key deprecated digunakan: {record.key_prefix} ('{record.name}'). "
-                    "Segera ganti dengan key baru."
-                )
-
-            return AuthResult(
-                valid      = True,
-                key_prefix = record.key_prefix,
-                key_name   = record.name,
-                scopes     = record.scopes,
-                tier       = record.tier,
-                deprecated = record.deprecated,
-            )
+        if candidates:
+            _pbkdf2_guard.record_failure(key_prefix)
 
         return AuthResult(valid=False, error="API key tidak valid.", key_prefix=key_prefix)
+
+    async def validate_async(self, raw_key: str) -> AuthResult:
+        if not self._loaded:
+            await asyncio.to_thread(self.load_keys)
+
+        if not raw_key or not raw_key.strip():
+            return AuthResult(valid=False, error="API key tidak ada.")
+
+        key_prefix = get_key_prefix(raw_key)
+
+        if _pbkdf2_guard.is_locked(key_prefix):
+            logger.warning(
+                f"[Security] Request ditolak karena prefix terkunci (brute-force): "
+                f"prefix={key_prefix!r}"
+            )
+            return AuthResult(
+                valid=False,
+                error="Terlalu banyak percobaan autentikasi gagal. Coba lagi nanti.",
+                key_prefix=key_prefix,
+            )
+
+        with self._load_lock:
+            keys_snapshot = dict(self._keys)
+
+        candidates = keys_snapshot.get(key_prefix, [])
+        if not candidates:
+            return AuthResult(valid=False, error="API key tidak valid.", key_prefix=key_prefix)
+
+        result = await asyncio.to_thread(self._verify_candidates, raw_key, key_prefix, candidates)
+        return result
+
+    def _verify_candidates(
+        self,
+        raw_key:    str,
+        key_prefix: str,
+        candidates: List[APIKeyRecord],
+    ) -> AuthResult:
+        for record in candidates:
+            if _verify_key(raw_key, record.key_hash):
+                _pbkdf2_guard.record_success(key_prefix)
+                return self._build_auth_result(record)
+
+        _pbkdf2_guard.record_failure(key_prefix)
+        return AuthResult(valid=False, error="API key tidak valid.", key_prefix=key_prefix)
+
+    def _build_auth_result(self, record: APIKeyRecord) -> AuthResult:
+        if not record.active:
+            logger.warning(f"Key nonaktif digunakan: {record.key_prefix}")
+            return AuthResult(
+                valid=False,
+                error="API key tidak aktif.",
+                key_prefix=record.key_prefix,
+            )
+
+        if record.expires_at and time.time() > record.expires_at:
+            logger.warning(f"Key kadaluarsa digunakan: {record.key_prefix}")
+            return AuthResult(
+                valid=False,
+                error="API key sudah kadaluarsa.",
+                key_prefix=record.key_prefix,
+            )
+
+        if record.deprecated:
+            logger.warning(
+                f"Key deprecated digunakan: {record.key_prefix} ('{record.name}'). "
+                "Segera ganti dengan key baru."
+            )
+
+        return AuthResult(
+            valid      = True,
+            key_prefix = record.key_prefix,
+            key_name   = record.name,
+            scopes     = record.scopes,
+            tier       = record.tier,
+            deprecated = record.deprecated,
+        )
 
     def get_tier_limit(self, tier: RateLimitTier) -> int:
         return TIER_LIMITS.get(tier, TIER_LIMITS[RateLimitTier.FREE])
@@ -295,6 +413,7 @@ class APIKeyManager:
 
 
 _key_manager: Optional[APIKeyManager] = None
+
 
 def get_key_manager() -> APIKeyManager:
     global _key_manager

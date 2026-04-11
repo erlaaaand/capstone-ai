@@ -93,8 +93,9 @@ async def verify_api_key(
             headers     = {"WWW-Authenticate": "ApiKey"},
         )
 
-    manager     = get_key_manager()
-    auth_result = manager.validate(raw_key)
+    manager = get_key_manager()
+
+    auth_result = await manager.validate_async(raw_key)
 
     if not auth_result.valid:
         AuditLogger.auth_failure(
@@ -104,6 +105,14 @@ async def verify_api_key(
             path,
             key_hint = raw_key[:8] + "..." if len(raw_key) >= 8 else "***",
         )
+
+        if "banyak percobaan" in auth_result.error:
+            raise HTTPException(
+                status_code = status.HTTP_429_TOO_MANY_REQUESTS,
+                detail      = auth_result.error,
+                headers     = {"Retry-After": "30"},
+            )
+
         raise HTTPException(
             status_code = status.HTTP_403_FORBIDDEN,
             detail      = f"Autentikasi gagal: {auth_result.error}",

@@ -12,14 +12,16 @@ logger = get_logger(__name__)
 _MODEL_ID           = "openai/clip-vit-base-patch32"
 _NON_DURIAN_THRESHOLD = 0.40
 
-_LABELS = [
-    "a photo of a durian fruit",
-    "a photo of a person",
-    "a photo of an animal",
-    "a photo of a vehicle",
-    "a photo of random objects or scenery",
-]
-
+_LABELS = {
+    "a raw, unedited, high-quality photograph of a real durian fruit, distinctly showing its sharp natural green-brown thorns or fresh yellow fleshy pods inside.": "Durian Asli",
+    "a digital illustration, 3d render, vector graphic, cartoon, anime, painting, sketch, drawing, or ai-generated synthetic art of a fruit.": "Ilustrasi / Render 3D",
+    "a digital screenshot, meme, promotional flyer, poster, graphic design, or an image containing visible text, words, icons, and UI elements.": "Tangkapan Layar / Teks",
+    "a photograph prominently featuring a human face, a person, crowds, or visible human hands holding, opening, or interacting with objects.": "Manusia / Anggota Tubuh",
+    "a photograph of cooked meals, yellow rice, curry, plated dishes on banana leaves, or durian-flavored desserts, ice cream, pastries, and cakes.": "Makanan Olahan / Hidangan",
+    "a photograph of similar rough green fruits like jackfruit, breadfruit, or soursop, or just a random pile of green leaves, grass, tree branches, and plants.": "Buah Lain / Dedaunan",
+    "a photograph of furry animals, pets, or spiky animals like hedgehogs or porcupines.": "Hewan",
+    "a general photograph of everyday household items, electronics, indoor furniture, vehicles, buildings, or landscape scenery without a clear main subject.": "Objek Acak / Pemandangan"
+}
 
 class CLIPService:
     _model     = None

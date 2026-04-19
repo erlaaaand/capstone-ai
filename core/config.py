@@ -32,12 +32,6 @@ VARIETY_MAP: Dict[str, VarietyInfo] = {
         origin="Malaysia (Perak / Selangor)",
         description="Varietas legendaris dengan daging kuning pucat hingga krem. Rasa pahit-manis yang kaya. Ciri fisik luarnya memiliki duri yang cukup tajam dan rapat dengan bentuk cenderung oval.",
     ),
-    "D101": VarietyInfo(
-        display_name="Muar Gold",
-        local_name="D101 / Muar Gold / Johor Mas",
-        origin="Malaysia (Johor)",
-        description="Daging buah tebal berwarna kuning oranye cerah. Rasanya sangat manis dengan tekstur lembut, nyaris tanpa rasa pahit. Kulit luarnya cenderung berwarna hijau kekuningan.",
-    ),
     "D197": VarietyInfo(
         display_name="Musang King",
         local_name="D197 / Musang King / Raja Kunyit / Mao Shan Wang",

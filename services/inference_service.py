@@ -42,9 +42,13 @@ class InferenceService:
             raise InferenceException(
                 detail=f"Input harus 4D, dapat {image_tensor.ndim}D."
             )
-        if image_tensor.shape[1:] != (224, 224, 3):
+        expected_shape = (settings.IMAGE_SIZE, settings.IMAGE_SIZE, 3)
+        if image_tensor.shape[1:] != expected_shape:
             raise InferenceException(
-                detail=f"Input shape tidak valid: {image_tensor.shape}. Diharapkan (1,224,224,3)."
+                detail=(
+                    f"Input shape tidak valid: {image_tensor.shape}. "
+                    f"Diharapkan (1, {settings.IMAGE_SIZE}, {settings.IMAGE_SIZE}, 3)."
+                )
             )
         if image_tensor.dtype != np.float32:
             image_tensor = image_tensor.astype(np.float32)

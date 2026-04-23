@@ -67,6 +67,7 @@ class CLIPService:
         return cls._ensure_loaded()
 
     @staticmethod
+    @staticmethod
     def is_durian(raw_input: bytes | str) -> bool:
         if not CLIPService._ensure_loaded():
             logger.warning(
@@ -84,8 +85,13 @@ class CLIPService:
 
             image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
+            # 1. Ekstrak keys (prompt bahasa Inggris) dan values (nama label) menjadi list
+            label_prompts = list(_LABELS.keys())
+            label_names = list(_LABELS.values())
+
+            # 2. Masukkan label_prompts (berupa List[str]) ke processor
             inputs = CLIPService._processor(
-                text=_LABELS,
+                text=label_prompts,
                 images=image,
                 return_tensors="pt",
                 padding=True,
@@ -101,12 +107,20 @@ class CLIPService:
             best_score = float(probs[best_idx])
 
             if best_idx != 0 and best_score > _NON_DURIAN_THRESHOLD:
+                # 3. Gunakan label_names untuk mengakses nama berdasarkan index angka
                 logger.warning(
                     f"[CLIPService] Bukan durian — terdeteksi sebagai: "
-                    f"'{_LABELS[best_idx]}' (confidence={best_score:.2f})"
+                    f"'{label_names[best_idx]}' (confidence={best_score:.2f})"
                 )
                 return False
 
+            return True
+
+        except Exception as exc:
+            logger.error(
+                f"[CLIPService] Error saat inferensi: {exc}",
+                exc_info=True,
+            )
             return True
 
         except Exception as exc:

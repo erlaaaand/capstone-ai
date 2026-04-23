@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     MODEL_PATH:  str = "models/weights/efficientnet_b0.onnx"
     CLASS_NAMES: str = "D101,D13,D197,D2,D200,D24"
 
-    IMAGE_SIZE: int = 224
+    IMAGE_SIZE: int = 640
 
     ENABLE_ENHANCEMENT:   bool  = True
     ENABLE_CLAHE:         bool  = True

@@ -22,6 +22,8 @@ from core.security import get_key_manager
 from models.model_loader import get_model_loader
 from services.clip_service import CLIPService
 
+from agents.market_intelligence.config import SCRAPING_TARGETS
+
 logger = get_logger(__name__)
 
 

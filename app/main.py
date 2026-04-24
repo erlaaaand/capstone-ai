@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, List
+from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,59 +21,25 @@ from core.rate_limiter import get_rate_limiter
 from core.security import get_key_manager
 from models.model_loader import get_model_loader
 from services.clip_service import CLIPService
-
-from agents.market_intelligence.config import SCRAPING_TARGETS
+from agents.market_intelligence.scheduler import get_scheduler
 
 logger = get_logger(__name__)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+# ---------------------------------------------------------------------------
+# Lifespan helpers — memisahkan startup/shutdown agar lifespan tetap ringkas
+# ---------------------------------------------------------------------------
+
+async def _run_startup() -> None:
     logger.info("=" * 60)
     logger.info(f"  Memulai {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info("=" * 60)
 
-    logger.info("[Startup] Memuat API keys...")
-    try:
-        key_manager = get_key_manager()
-        key_manager.load_keys()
-    except Exception as e:
-        logger.critical(f"[Startup] Gagal load API keys: {str(e)}")
-
-    logger.info("[Startup] Memuat ONNX model...")
-    try:
-        model_loader = get_model_loader()
-        model_loader.load_model()
-        logger.info("[Startup] ONNX model siap menerima request.")
-    except Exception as e:
-        logger.critical(
-            f"[Startup] Gagal load model: {str(e)}. "
-            "Service berjalan tapi /predict akan return 503."
-        )
-
-    logger.info("[Startup] Memuat model CLIP untuk validasi gambar...")
-    try:
-        clip_ready = CLIPService.warmup()
-        if clip_ready:
-            logger.info("[Startup] CLIP model siap.")
-        else:
-            logger.warning(
-                "[Startup] CLIP model gagal dimuat. "
-                "Validasi zero-shot dinonaktifkan — semua gambar akan diizinkan."
-            )
-    except Exception as e:
-        logger.error(f"[Startup] Error saat warmup CLIP: {str(e)}")
-
-    logger.info("[Startup] Memulai rate limiter cleanup task...")
-    try:
-        rate_limiter = get_rate_limiter()
-        await rate_limiter.start_cleanup_task()
-        logger.info("[Startup] Rate limiter cleanup task aktif.")
-    except Exception as e:
-        logger.error(
-            f"[Startup] Gagal memulai cleanup task: {str(e)}. "
-            "Cleanup akan tetap berjalan sebagai fallback saat ada request."
-        )
+    _safe_startup("Memuat API keys", _load_api_keys)
+    _safe_startup("Memuat ONNX model", _load_onnx_model)
+    _safe_startup("Memuat CLIP model", _load_clip_model)
+    await _safe_startup_async("Memulai rate limiter cleanup task", _start_rate_limiter)
+    await _safe_startup_async("Memulai Market Intelligence scheduler", _start_scheduler)
 
     logger.info(
         f"[Startup] Config: classes={settings.num_classes} "
@@ -84,27 +50,103 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("[Startup] Service READY.")
     logger.info("=" * 60)
 
-    yield
 
+async def _run_shutdown() -> None:
     logger.info("[Shutdown] Memulai graceful shutdown...")
-
-    try:
-        rate_limiter = get_rate_limiter()
-        await rate_limiter.stop_cleanup_task()
-        logger.info("[Shutdown] Rate limiter cleanup task dihentikan.")
-    except Exception as e:
-        logger.error(f"[Shutdown] Error saat stop cleanup task: {str(e)}")
-
-    try:
-        get_model_loader().unload_model()
-        logger.info("[Shutdown] ONNX model di-unload.")
-    except Exception as e:
-        logger.error(f"[Shutdown] Error unload model: {str(e)}")
-
+    await _safe_shutdown_async("Market Intelligence scheduler", _stop_scheduler)
+    await _safe_shutdown_async("Rate limiter cleanup task", _stop_rate_limiter)
+    _safe_shutdown("ONNX model", get_model_loader().unload_model)
     logger.info("[Shutdown] Selesai.")
 
 
-def custom_openapi(app: FastAPI):
+# ---------------------------------------------------------------------------
+# Unit startup/shutdown — satu fungsi per resource
+# ---------------------------------------------------------------------------
+
+def _load_api_keys() -> None:
+    get_key_manager().load_keys()
+
+def _load_onnx_model() -> None:
+    get_model_loader().load_model()
+    logger.info("[Startup] ONNX model siap menerima request.")
+
+def _load_clip_model() -> None:
+    ready = CLIPService.warmup()
+    if ready:
+        logger.info("[Startup] CLIP model siap.")
+    else:
+        logger.warning(
+            "[Startup] CLIP model gagal dimuat. "
+            "Validasi zero-shot dinonaktifkan — semua gambar akan diizinkan."
+        )
+
+async def _start_rate_limiter() -> None:
+    await get_rate_limiter().start_cleanup_task()
+    logger.info("[Startup] Rate limiter cleanup task aktif.")
+
+async def _start_scheduler() -> None:
+    await get_scheduler().start()
+    logger.info("[Startup] Market Intelligence Agent scheduler aktif.")
+
+async def _stop_scheduler() -> None:
+    await get_scheduler().stop()
+
+async def _stop_rate_limiter() -> None:
+    await get_rate_limiter().stop_cleanup_task()
+
+
+# ---------------------------------------------------------------------------
+# Helper: tangani error startup/shutdown tanpa crash seluruh service
+# ---------------------------------------------------------------------------
+
+def _safe_startup(label: str, fn) -> None:
+    logger.info(f"[Startup] {label}...")
+    try:
+        fn()
+    except Exception as e:
+        logger.critical(f"[Startup] Gagal — {label}: {e}")
+
+async def _safe_startup_async(label: str, fn) -> None:
+    logger.info(f"[Startup] {label}...")
+    try:
+        await fn()
+    except Exception as e:
+        logger.error(
+            f"[Startup] Gagal — {label}: {e}. "
+            "Service tetap berjalan tanpa fitur ini."
+        )
+
+def _safe_shutdown(label: str, fn) -> None:
+    try:
+        fn()
+        logger.info(f"[Shutdown] {label} dihentikan.")
+    except Exception as e:
+        logger.error(f"[Shutdown] Error saat stop {label}: {e}")
+
+async def _safe_shutdown_async(label: str, fn) -> None:
+    try:
+        await fn()
+        logger.info(f"[Shutdown] {label} dihentikan.")
+    except Exception as e:
+        logger.error(f"[Shutdown] Error saat stop {label}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Lifespan
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    await _run_startup()
+    yield
+    await _run_shutdown()
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI schema
+# ---------------------------------------------------------------------------
+
+def _build_openapi_schema(app: FastAPI) -> dict:
     if app.openapi_schema:
         return app.openapi_schema
 
@@ -130,24 +172,17 @@ def custom_openapi(app: FastAPI):
             "Rate limit headers: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, "
             "`X-RateLimit-Reset`"
         ),
-        routes      = app.routes,
-        contact     = {
-            "name":  "Durian API Support",
-            "email": "api-support@example.com",
-        },
+        routes  = app.routes,
+        contact = {"name": "Durian API Support", "email": "api-support@example.com"},
     )
 
     schema.setdefault("components", {})
     schema["components"]["securitySchemes"] = {
         "ApiKeyAuth": {
-            "type": "apiKey",
-            "in":   "header",
-            "name": "X-API-Key",
-            "description": (
-                "API key dalam format `dk_live_xxx` (production) "
-                "atau `dk_test_xxx` (testing). "
-                "Dapatkan key dari administrator."
-            ),
+            "type":        "apiKey",
+            "in":          "header",
+            "name":        "X-API-Key",
+            "description": "API key format `dk_live_xxx` (prod) atau `dk_test_xxx` (test).",
         },
         "BearerAuth": {
             "type":         "http",
@@ -156,12 +191,14 @@ def custom_openapi(app: FastAPI):
             "description":  "Bearer token — masukkan API key setelah 'Bearer '.",
         },
     }
-
-    schema["security"] = [{"ApiKeyAuth": []}, {"BearerAuth": []}]
-
-    app.openapi_schema = schema
+    schema["security"]  = [{"ApiKeyAuth": []}, {"BearerAuth": []}]
+    app.openapi_schema  = schema
     return schema
 
+
+# ---------------------------------------------------------------------------
+# App factory
+# ---------------------------------------------------------------------------
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -174,11 +211,11 @@ def create_app() -> FastAPI:
         openapi_url = "/openapi.json" if settings.DEBUG else None,
     )
 
+    # --- Middleware (urutan: terluar → terdalam) ---
     app.add_middleware(
         PayloadSizeLimitMiddleware,
         max_bytes = settings.max_file_size_bytes + (1024 * 1024),
     )
-
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 
     allowed_hosts = settings.ALLOWED_HOSTS if hasattr(settings, "ALLOWED_HOSTS") else ["*"]
@@ -193,62 +230,51 @@ def create_app() -> FastAPI:
         allow_headers     = ["X-API-Key", "Authorization", "Content-Type", "Accept"],
         expose_headers    = [
             "X-Request-ID",
-            "X-RateLimit-Limit",
-            "X-RateLimit-Remaining",
-            "X-RateLimit-Reset",
+            "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset",
             "X-API-Version",
         ],
         max_age = 600,
     )
-
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
 
+    # --- Exception handlers ---
     @app.exception_handler(DurianServiceException)
-    async def service_exception_handler(request, exc: DurianServiceException):
-        request_id = getattr(request.state, "request_id", "unknown")
+    async def _service_exc(request, exc: DurianServiceException):
         return JSONResponse(
             status_code = exc.status_code,
             content     = {
                 "success":    False,
                 "error":      exc.__class__.__name__,
                 "detail":     exc.detail,
-                "request_id": request_id,
+                "request_id": getattr(request.state, "request_id", "unknown"),
             },
             headers = exc.headers or {},
         )
 
     @app.exception_handler(404)
-    async def not_found_handler(request, exc):
-        request_id = getattr(request.state, "request_id", "unknown")
+    async def _not_found(request, exc):
         return JSONResponse(
             status_code = 404,
             content     = {
-                "success":    False,
-                "error":      "NotFound",
-                "detail":     f"Endpoint '{request.url.path}' tidak ditemukan.",
-                "request_id": request_id,
+                "success": False, "error": "NotFound",
+                "detail": f"Endpoint '{request.url.path}' tidak ditemukan.",
+                "request_id": getattr(request.state, "request_id", "unknown"),
             },
         )
 
     @app.exception_handler(405)
-    async def method_not_allowed_handler(request, exc):
-        request_id = getattr(request.state, "request_id", "unknown")
+    async def _method_not_allowed(request, exc):
         return JSONResponse(
             status_code = 405,
             content     = {
-                "success":    False,
-                "error":      "MethodNotAllowed",
-                "detail":     f"Method '{request.method}' tidak diizinkan di '{request.url.path}'.",
-                "request_id": request_id,
+                "success": False, "error": "MethodNotAllowed",
+                "detail": f"Method '{request.method}' tidak diizinkan di '{request.url.path}'.",
+                "request_id": getattr(request.state, "request_id", "unknown"),
             },
         )
 
-    @app.get(
-        "/",
-        include_in_schema = False,
-        summary           = "API Info",
-    )
+    @app.get("/", include_in_schema=False, summary="API Info")
     async def root():
         return {
             "name":          settings.APP_NAME,
@@ -262,7 +288,7 @@ def create_app() -> FastAPI:
         }
 
     app.include_router(api_router)
-    app.openapi = lambda: custom_openapi(app)
+    app.openapi = lambda: _build_openapi_schema(app)
 
     return app
 

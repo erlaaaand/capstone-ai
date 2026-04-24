@@ -18,31 +18,49 @@ VARIETY_MAP: Dict[str, VarietyInfo] = {
         display_name="Dato Nina",
         local_name="D2 / Dato Nina",
         origin="Malaysia (Melaka)",
-        description="Durian dengan bentuk buah agak bulat. Daging buahnya berwarna tembaga atau kuning kecokelatan dengan kombinasi rasa manis dan sedikit pahit.",
+        description=(
+            "Durian dengan bentuk buah agak bulat. Daging buahnya berwarna tembaga "
+            "atau kuning kecokelatan dengan kombinasi rasa manis dan sedikit pahit."
+        ),
     ),
     "D13": VarietyInfo(
         display_name="Golden Bun",
         local_name="D13 / Golden Bun",
         origin="Malaysia (Johor)",
-        description="Memiliki daging berwarna oranye kemerahan yang pekat. Rasanya manis, sangat wangi, dan bijinya besar. Ciri luarnya cenderung membulat dengan duri tebal.",
+        description=(
+            "Memiliki daging berwarna oranye kemerahan yang pekat. Rasanya manis, "
+            "sangat wangi, dan bijinya besar. Ciri luarnya cenderung membulat dengan duri tebal."
+        ),
     ),
     "D24": VarietyInfo(
         display_name="Sultan",
         local_name="D24 / Sultan / Bukit Merah",
         origin="Malaysia (Perak / Selangor)",
-        description="Varietas legendaris dengan daging kuning pucat hingga krem. Rasa pahit-manis yang kaya. Ciri fisik luarnya memiliki duri yang cukup tajam dan rapat dengan bentuk cenderung oval.",
+        description=(
+            "Varietas legendaris dengan daging kuning pucat hingga krem. Rasa pahit-manis "
+            "yang kaya. Ciri fisik luarnya memiliki duri yang cukup tajam dan rapat "
+            "dengan bentuk cenderung oval."
+        ),
     ),
     "D197": VarietyInfo(
         display_name="Musang King",
         local_name="D197 / Musang King / Raja Kunyit / Mao Shan Wang",
         origin="Malaysia (Kelantan)",
-        description="Raja durian Malaysia dengan daging kuning-emas tebal. Rasa kaya manis-pahit yang kompleks. Ciri khas luarnya memiliki pola bintang (star-shape) botak di bagian bawah dan duri berbentuk piramida.",
+        description=(
+            "Raja durian Malaysia dengan daging kuning-emas tebal. Rasa kaya manis-pahit "
+            "yang kompleks. Ciri khas luarnya memiliki pola bintang (star-shape) botak "
+            "di bagian bawah dan duri berbentuk piramida."
+        ),
     ),
     "D200": VarietyInfo(
         display_name="Black Thorn",
         local_name="D200 / Ochee / Duri Hitam / Black Thorn",
         origin="Malaysia (Penang)",
-        description="Durian super premium dengan daging oranye kemerahan dan rasa manis-pahit yang sangat pekat. Ciri khas luarnya bentuknya membulat dengan garis lekukan di bagian bawah dan ujung duri berwarna kehitaman.",
+        description=(
+            "Durian super premium dengan daging oranye kemerahan dan rasa manis-pahit "
+            "yang sangat pekat. Ciri khas luarnya bentuknya membulat dengan garis lekukan "
+            "di bagian bawah dan ujung duri berwarna kehitaman."
+        ),
     ),
 }
 
@@ -74,11 +92,15 @@ class Settings(BaseSettings):
     APP_NAME:    str  = "Durian Classification API"
     APP_VERSION: str  = "1.0.0"
     DEBUG:       bool = False
+    LOG_LEVEL:   str  = "INFO"
 
-    LOG_LEVEL: str = "INFO"
+    MODEL_PATH: str = "models/weights/efficientnet_b0.onnx"
 
-    MODEL_PATH:  str = "models/weights/efficientnet_b0.onnx"
-    CLASS_NAMES: str = "D101,D13,D197,D2,D200,D24"
+    # BUG FIX: default sebelumnya "D101,D13,D197,D2,D200,D24" (6 kelas) tidak sinkron
+    # dengan data/class_indices.json yang hanya mendefinisikan 5 kelas.
+    # D101 tidak ada dalam training data — dihapus dari default.
+    # Urutan WAJIB alphabetical sesuai folder training (indeks 0–4).
+    CLASS_NAMES: str = "D13,D197,D2,D200,D24"
 
     IMAGE_SIZE: int = 640
 
@@ -91,11 +113,12 @@ class Settings(BaseSettings):
     ALLOWED_EXTENSIONS: str = "jpg,jpeg,png,webp"
     MAX_FILE_SIZE_MB:   int = 10
 
-    CORS_ORIGINS_STR: str = "http://localhost:3000,http://localhost:8080"
-
+    CORS_ORIGINS_STR:  str = "http://localhost:3000,http://localhost:8080"
     ALLOWED_HOSTS_STR: str = "*"
 
     API_KEY_REQUIRED: bool = True
+
+    # --- Validators ---
 
     @field_validator("LOG_LEVEL")
     @classmethod
@@ -103,26 +126,28 @@ class Settings(BaseSettings):
         valid = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
         upper = v.upper()
         if upper not in valid:
-            raise ValueError(f"LOG_LEVEL '{v}' tidak valid.")
+            raise ValueError(f"LOG_LEVEL '{v}' tidak valid. Pilih: {valid}")
         return upper
 
     @field_validator("IMAGE_SIZE")
     @classmethod
     def validate_image_size(cls, v: int) -> int:
         if not 32 <= v <= 1024:
-            raise ValueError(f"IMAGE_SIZE harus 32–1024.")
+            raise ValueError("IMAGE_SIZE harus berada di antara 32–1024.")
         return v
 
     @field_validator("MAX_FILE_SIZE_MB")
     @classmethod
     def validate_max_file_size(cls, v: int) -> int:
         if v <= 0:
-            raise ValueError("MAX_FILE_SIZE_MB harus positif.")
+            raise ValueError("MAX_FILE_SIZE_MB harus > 0.")
         return v
+
+    # --- Computed properties ---
 
     @property
     def class_names_list(self) -> List[str]:
-        return [n.strip() for n in self.CLASS_NAMES.split(",")]
+        return [n.strip() for n in self.CLASS_NAMES.split(",") if n.strip()]
 
     @property
     def num_classes(self) -> int:
@@ -164,8 +189,8 @@ def get_settings() -> Settings:
 
 
 def reload_settings() -> Settings:
-
     get_settings.cache_clear()
     return get_settings()
+
 
 settings: Settings = get_settings()

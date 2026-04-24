@@ -2,94 +2,160 @@
 """
 Konfigurasi terpusat Market Intelligence Agent.
 
-Semua URL target, CSS selector, LLM setting, dan konstanta agen
-WAJIB didefinisikan di sini — bukan di-hardcode di scraper atau analyzer.
-Ubah nilai via environment variable (.env) atau langsung di dataclass ini.
+Changelog v2:
+  - ScrapingTarget: `content_selectors` diganti `api_url_pattern` (regex/glob).
+    Ini adalah perubahan arsitektur inti: dari DOM scraping ke Network Interception.
+  - SCRAPING_TARGETS diperbarui dengan pola URL XHR/Fetch API e-commerce.
+  - OllamaConfig: `max_input_chars` dinaikkan (JSON intercept lebih ringkas dari HTML).
+  - Semua nilai konfigurasi WAJIB diset via environment variable — tidak hardcode.
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import List
+from typing import Optional
 
 
 # ---------------------------------------------------------------------------
-# Selector Strategy: gunakan list untuk fallback jika selector utama berubah.
-# Scraper akan mencoba satu per satu dari kiri ke kanan.
+# ScrapingTarget — konfigurasi satu sumber data
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class ScrapingTarget:
-    """Satu sumber data yang akan di-scrape."""
-    name:              str
-    url:               str
-    # CSS selectors untuk container teks utama (dicoba berurutan)
-    content_selectors: List[str] = field(default_factory=list)
+    """
+    Satu sumber data yang akan di-intercept network-nya oleh Playwright.
+
+    Perubahan dari v1:
+    - `content_selectors` (List[str]) DIHAPUS — tidak lagi melakukan DOM scraping.
+    - `api_url_pattern` (str) DITAMBAHKAN — pola glob/regex untuk mencocokkan
+      URL XHR atau Fetch request yang berisi data produk JSON dari e-commerce.
+
+    Cara kerja baru:
+      Playwright menavigasi ke `url` (halaman pencarian), lalu memantau semua
+      network response. Response yang URL-nya cocok dengan `api_url_pattern`
+      akan di-intercept dan body JSON-nya disimpan sebagai raw data.
+      Ini jauh lebih stabil dibanding CSS selector karena API endpoint
+      e-commerce berubah jauh lebih jarang daripada class HTML/CSS-nya.
+
+    Panduan `api_url_pattern`:
+      - Gunakan glob-style: "**/api/v1/search**", "**pdp/get_product**"
+      - Gunakan substring: "*search*", "*product*", "*catalog*"
+      - Makin spesifik makin baik untuk menghindari false-positive.
+    """
+    name:             str
+    url:              str
+    # Pola glob/substring untuk mencocokkan URL XHR/Fetch response target
+    api_url_pattern:  str = "**/api/**"
     # Timeout Playwright per halaman (milliseconds)
-    page_timeout_ms:   int = 30_000
+    page_timeout_ms:  int = 35_000
     # Jumlah retry jika halaman gagal dimuat
-    max_retries:       int = 2
-    # Tunggu network idle sebelum scraping (True untuk SPA/JS-heavy)
-    wait_until:        str = "domcontentloaded"
+    max_retries:      int = 2
+    # Strategi tunggu: "networkidle" untuk SPA (lebih lama tapi aman),
+    # "domcontentloaded" untuk halaman server-side render
+    wait_until:       str = "networkidle"
+    # Timeout tambahan (ms) untuk menunggu XHR setelah page load
+    # Berguna untuk SPA yang melakukan lazy loading setelah initial render
+    xhr_settle_ms:    int = 3_000
+    # Jumlah maksimum JSON response yang dikumpulkan per halaman
+    # Mencegah pengumpulan resource kecil yang tidak relevan (icon, analytics, dll.)
+    max_responses:    int = 5
+    # Ukuran minimum body response (bytes) agar tidak mengambil response kecil
+    # seperti tracking pixel atau config JSON berukuran kecil
+    min_response_bytes: int = 500
 
 
 # ---------------------------------------------------------------------------
-# Target URLs
-# Sesuaikan url dan selector berdasarkan situs marketplace/forum yang relevan.
-# Contoh di bawah adalah placeholder struktural yang valid secara kode.
+# Target E-commerce
+#
+# CATATAN IMPLEMENTASI:
+# URL menggunakan kata kunci "utuh" atau "whole" untuk membantu e-commerce
+# menampilkan hasil yang relevan. Namun tetap ada kemungkinan produk kupas
+# muncul, sehingga lapisan filter LLM dan Python di task.py tetap krusial.
+#
+# `api_url_pattern` disesuaikan dengan pola XHR/Fetch yang digunakan
+# masing-masing platform berdasarkan observasi network tab DevTools.
+# Pola ini HARUS diverifikasi ulang secara berkala karena platform dapat
+# mengubah endpoint API mereka.
 # ---------------------------------------------------------------------------
 
-SCRAPING_TARGETS: List[ScrapingTarget] = [
+SCRAPING_TARGETS: list[ScrapingTarget] = [
+    # ── Tokopedia: Durian Musang King Utuh ──────────────────────────────────
     ScrapingTarget(
-        name="Tokopedia - Durian Musang King",
-        url=(
+        name            = "Tokopedia - Durian Musang King Utuh",
+        url             = (
             "https://www.tokopedia.com/search"
-            "?st=product&q=durian+musang+king+D197&sort=5"
+            "?st=product&q=durian+musang+king+utuh+berkulit&sort=5"
         ),
-        content_selectors=[
-            "[data-testid='divSRPContentProducts']",  # selector primer
-            ".css-54k5sq",                             # fallback v1
-            "[class*='product-list']",                 # fallback v2 (wildcard)
-        ],
-        wait_until="networkidle",
-        page_timeout_ms=45_000,
+        # Tokopedia menggunakan GraphQL via endpoint /graphql/
+        # Response mengandung data produk dalam structure data.searchProduct.data
+        api_url_pattern = "**/graphql/**",
+        wait_until      = "networkidle",
+        page_timeout_ms = 45_000,
+        xhr_settle_ms   = 4_000,
+        max_responses   = 3,
+        min_response_bytes = 2_000,
     ),
+
+    # ── Tokopedia: Durian Duri Hitam Utuh ───────────────────────────────────
     ScrapingTarget(
-        name="Tokopedia - Durian Duri Hitam",
-        url=(
+        name            = "Tokopedia - Durian Duri Hitam Utuh",
+        url             = (
             "https://www.tokopedia.com/search"
-            "?st=product&q=durian+duri+hitam+D200+ochee&sort=5"
+            "?st=product&q=durian+duri+hitam+ochee+utuh+berkulit&sort=5"
         ),
-        content_selectors=[
-            "[data-testid='divSRPContentProducts']",
-            ".css-54k5sq",
-            "[class*='product-list']",
-        ],
-        wait_until="networkidle",
-        page_timeout_ms=45_000,
+        api_url_pattern = "**/graphql/**",
+        wait_until      = "networkidle",
+        page_timeout_ms = 45_000,
+        xhr_settle_ms   = 4_000,
+        max_responses   = 3,
+        min_response_bytes = 2_000,
     ),
+
+    # ── Tokopedia: Durian Sultan & Golden Bun ────────────────────────────────
     ScrapingTarget(
-        name="Shopee - Durian Premium",
-        url="https://shopee.co.id/search?keyword=durian+musang+king+duri+hitam&sortBy=sales",
-        content_selectors=[
-            ".shopee-search-item-result__items",
-            "[data-sqe='item']",
-            ".col-xs-2-4",
-        ],
-        wait_until="networkidle",
-        page_timeout_ms=45_000,
+        name            = "Tokopedia - Durian Sultan D24 Golden Bun D13 Utuh",
+        url             = (
+            "https://www.tokopedia.com/search"
+            "?st=product&q=durian+sultan+golden+bun+utuh+berkulit&sort=5"
+        ),
+        api_url_pattern = "**/graphql/**",
+        wait_until      = "networkidle",
+        page_timeout_ms = 45_000,
+        xhr_settle_ms   = 4_000,
+        max_responses   = 3,
+        min_response_bytes = 2_000,
     ),
+
+    # ── Shopee: Durian Premium Utuh ─────────────────────────────────────────
     ScrapingTarget(
-        name="Forum Durian Indonesia",
-        url="https://www.kaskus.co.id/thread/harga-durian-premium-musang-king",
-        content_selectors=[
-            ".post-message",
-            "[class*='postbody']",
-            "article",
-        ],
-        wait_until="domcontentloaded",
-        page_timeout_ms=20_000,
+        name            = "Shopee - Durian Premium Utuh",
+        url             = (
+            "https://shopee.co.id/search"
+            "?keyword=durian+musang+king+duri+hitam+utuh+berkulit&sortBy=sales"
+        ),
+        # Shopee menggunakan endpoint /api/v4/ untuk product search
+        api_url_pattern = "**/api/v4/search/**",
+        wait_until      = "networkidle",
+        page_timeout_ms = 45_000,
+        xhr_settle_ms   = 5_000,
+        max_responses   = 3,
+        min_response_bytes = 2_000,
+    ),
+
+    # ── Shopee: Durian Golden Bun & Sultan Utuh ─────────────────────────────
+    ScrapingTarget(
+        name            = "Shopee - Durian Golden Bun Sultan Utuh",
+        url             = (
+            "https://shopee.co.id/search"
+            "?keyword=durian+golden+bun+sultan+d24+utuh+berkulit&sortBy=sales"
+        ),
+        api_url_pattern = "**/api/v4/search/**",
+        wait_until      = "networkidle",
+        page_timeout_ms = 45_000,
+        xhr_settle_ms   = 5_000,
+        max_responses   = 3,
+        min_response_bytes = 2_000,
     ),
 ]
 
@@ -100,17 +166,21 @@ SCRAPING_TARGETS: List[ScrapingTarget] = [
 
 @dataclass(frozen=True)
 class OllamaConfig:
-    base_url:       str   = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
-    model:          str   = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen2.5:7b"))
-    # Timeout per request LLM (detik)
-    timeout_sec:    float = 120.0
-    # Sampling — gunakan temperature rendah untuk output terstruktur
-    temperature:    float = 0.1
-    top_p:          float = 0.9
-    # Panjang konteks maksimum yang dikirim ke LLM (karakter)
-    max_input_chars: int  = 8_000
+    base_url:    str   = field(
+        default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    )
+    model:       str   = field(
+        default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
+    )
+    timeout_sec: float = 120.0
+    # JSON intercept jauh lebih ringkas dari HTML — naikkan sedikit untuk
+    # mengakomodasi output CoT yang lebih panjang di field "notes"
+    max_input_chars:    int = 10_000
+    # Temperatur rendah untuk output terstruktur yang konsisten
+    temperature:        float = 0.05
+    top_p:              float = 0.9
     # Retry jika LLM tidak mengembalikan JSON valid
-    max_parse_retries: int = 2
+    max_parse_retries:  int   = 2
 
 
 OLLAMA_CONFIG = OllamaConfig()
@@ -122,12 +192,15 @@ OLLAMA_CONFIG = OllamaConfig()
 
 @dataclass(frozen=True)
 class NestJSClientConfig:
-    base_url:       str   = field(default_factory=lambda: os.getenv("NESTJS_BASE_URL", "http://localhost:3000"))
-    endpoint:       str   = "/api/market-intelligence/ingest"
-    api_key:        str   = field(default_factory=lambda: os.getenv("NESTJS_INTERNAL_API_KEY", ""))
-    timeout_sec:    float = 15.0
-    max_retries:    int   = 3
-    # Backoff awal sebelum retry (detik)
+    base_url:          str   = field(
+        default_factory=lambda: os.getenv("NESTJS_BASE_URL", "http://localhost:3000")
+    )
+    endpoint:          str   = "/api/market-intelligence/ingest"
+    api_key:           str   = field(
+        default_factory=lambda: os.getenv("NESTJS_INTERNAL_API_KEY", "")
+    )
+    timeout_sec:       float = 15.0
+    max_retries:       int   = 3
     retry_backoff_sec: float = 2.0
 
 
@@ -140,15 +213,11 @@ NESTJS_CONFIG = NestJSClientConfig()
 
 @dataclass(frozen=True)
 class SchedulerConfig:
-    # Waktu eksekusi (WIB = UTC+7)
     # Default: setiap hari pukul 02:30 WIB (= 19:30 UTC sehari sebelumnya)
-    cron_hour:   int = int(os.getenv("MI_AGENT_CRON_HOUR", "19"))   # UTC
-    cron_minute: int = int(os.getenv("MI_AGENT_CRON_MINUTE", "30"))
-    # Timezone scheduler
-    timezone:    str = "UTC"
-    # Nonaktifkan agent sepenuhnya (untuk testing)
+    cron_hour:   int  = int(os.getenv("MI_AGENT_CRON_HOUR",   "19"))
+    cron_minute: int  = int(os.getenv("MI_AGENT_CRON_MINUTE", "30"))
+    timezone:    str  = "UTC"
     disabled:    bool = os.getenv("MI_AGENT_DISABLED", "false").lower() == "true"
-    # Maksimum waktu total satu siklus run (detik) sebelum dipaksa stop
     max_run_duration_sec: int = int(os.getenv("MI_AGENT_MAX_DURATION_SEC", "3600"))
 
 
@@ -159,9 +228,5 @@ SCHEDULER_CONFIG = SchedulerConfig()
 # Circuit Breaker
 # ---------------------------------------------------------------------------
 
-# Berapa kali scraping satu target boleh gagal berturut-turut
-# sebelum dinonaktifkan sementara
-CIRCUIT_BREAKER_THRESHOLD: int = int(os.getenv("MI_CIRCUIT_BREAKER_THRESHOLD", "3"))
-
-# Berapa lama (detik) target dinonaktifkan setelah circuit breaker trip
-CIRCUIT_BREAKER_COOLDOWN_SEC: int = int(os.getenv("MI_CIRCUIT_BREAKER_COOLDOWN_SEC", "86400"))  # 24 jam
+CIRCUIT_BREAKER_THRESHOLD:    int = int(os.getenv("MI_CIRCUIT_BREAKER_THRESHOLD",    "3"))
+CIRCUIT_BREAKER_COOLDOWN_SEC: int = int(os.getenv("MI_CIRCUIT_BREAKER_COOLDOWN_SEC", "86400"))

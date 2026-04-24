@@ -2,12 +2,19 @@
 """
 Orchestrator Market Intelligence Agent.
 
-Tanggung jawab tunggal: merantai scraper → llm_analyzer → nestjs_client
-dengan manajemen:
-  - Run Guard (asyncio.Lock) — cegah eksekusi paralel
-  - Timeout global (asyncio.wait_for)
-  - Aggregasi status dan error ke MarketReportPayload
-  - Tidak tahu tentang scheduler — bisa dipanggil manual untuk testing
+Changelog v2:
+  - Pipeline diperbarui untuk menerima 3-tuple dari llm_analyzer
+    (entries, parse_errors, entries_discarded_by_analyzer).
+  - Ditambahkan "Double Validation" layer Python sebagai lapisan pertahanan
+    KEDUA untuk mencegah data leakage:
+      * Lapisan 1 (LLM): LLM menandai is_whole_fruit=False dan tidak
+        memasukkan ke array (atau llm_analyzer.py membuangnya).
+      * Lapisan 2 (Python/task.py): Iterasi ulang output LLM dan tolak
+        SETIAP entry yang is_whole_fruit != True, meskipun LLM
+        "terlupa" atau menghasilkan entry yang lolos lapisan 1.
+  - `MarketReportPayload` diperbarui dengan field `entries_discarded`
+    untuk melacak total entry yang dibuang dari kedua lapisan.
+  - Run Guard dan Global Timeout dipertahankan.
 """
 
 from __future__ import annotations
@@ -15,12 +22,13 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional, Tuple
 
 from core.logger import get_logger
 from agents.market_intelligence.config import SCHEDULER_CONFIG
 from agents.market_intelligence.schemas import (
     AgentRunStatus,
+    MarketPriceEntry,
     MarketReportPayload,
 )
 from agents.market_intelligence import scraper, llm_analyzer, nestjs_client
@@ -29,77 +37,184 @@ logger = get_logger("agent.task")
 
 
 # ---------------------------------------------------------------------------
-# Run Guard — satu asyncio.Lock yang shared selama lifetime proses
+# Run Guard
 # ---------------------------------------------------------------------------
 
 _run_lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
-# Core task
+# Double Validation — Lapisan Pertahanan Python
+# ---------------------------------------------------------------------------
+
+def _apply_python_whole_fruit_gate(
+    raw_entries: List[MarketPriceEntry],
+    run_id:      str,
+) -> Tuple[List[MarketPriceEntry], int]:
+    """
+    Lapisan pertahanan KEDUA (Python-level) terhadap data leakage.
+
+    Meskipun LLM Analyzer (lapisan pertama) sudah memfilter entry
+    is_whole_fruit=False, ada kemungkinan:
+    1. LLM "terlupa" mengikuti instruksi dan tetap menghasilkan entry
+       is_whole_fruit=False di JSON output-nya.
+    2. llm_analyzer._validate_and_filter_entries() melewatkan suatu edge case.
+
+    Fungsi ini melakukan iterasi FINAL sebagai safety net absolut.
+    Setiap entry yang is_whole_fruit != True akan dibuang dan dicatat.
+
+    Return:
+        (clean_entries, discarded_count_at_this_layer)
+    """
+    clean_entries: List[MarketPriceEntry] = []
+    discarded_here: int = 0
+
+    for entry in raw_entries:
+        if not entry.is_whole_fruit:
+            # Ini seharusnya tidak terjadi jika lapisan LLM berjalan benar.
+            # Jika muncul di log ini, artinya ada regresi di LLM atau prompt.
+            logger.error(
+                f"[Task][DoubleValidation] PERINGATAN: Entry dengan is_whole_fruit=False "
+                f"LOLOS dari lapisan LLM Analyzer! "
+                f"run_id={run_id} | "
+                f"variety={entry.variety_code.value} | "
+                f"alias='{entry.variety_alias}' | "
+                f"weight_ref='{entry.weight_reference}' | "
+                f"notes='{entry.notes}'. "
+                f"Entry DIBUANG di lapisan Python. [DATA LEAKAGE PREVENTED - PYTHON LAYER]"
+            )
+            discarded_here += 1
+            continue
+
+        clean_entries.append(entry)
+
+    if discarded_here > 0:
+        logger.warning(
+            f"[Task][DoubleValidation] {discarded_here} entry dibuang di lapisan Python. "
+            "Periksa kualitas LLM output dan system prompt."
+        )
+    else:
+        logger.info(
+            f"[Task][DoubleValidation] Semua {len(clean_entries)} entry lolos validasi Python. "
+            "Tidak ada data leakage terdeteksi di lapisan ini."
+        )
+
+    return clean_entries, discarded_here
+
+
+# ---------------------------------------------------------------------------
+# Core Pipeline
 # ---------------------------------------------------------------------------
 
 async def _run_pipeline() -> MarketReportPayload:
     """
-    Pipeline inti (tanpa guard / timeout).
+    Pipeline inti: Scraping → LLM Analysis → Double Validation → NestJS.
     Dipanggil oleh run_once() yang sudah wrap dengan guard dan timeout.
     """
     run_id     = str(uuid.uuid4())
     started_at = datetime.now(timezone.utc)
-    logger.info(f"[Task] === Market Intelligence Agent START | run_id={run_id} ===")
 
-    # ------------------------------------------------------------------
-    # TAHAP 1: Scraping
-    # ------------------------------------------------------------------
-    logger.info("[Task] Tahap 1/3: Scraping target...")
+    logger.info(
+        f"[Task] ══════════════════════════════════════════════════════════\n"
+        f"[Task]  Market Intelligence Agent START | run_id={run_id}\n"
+        f"[Task] ══════════════════════════════════════════════════════════"
+    )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # TAHAP 1: Network Intercept Scraping
+    # ──────────────────────────────────────────────────────────────────────────
+    logger.info("[Task] ── Tahap 1/4: Network Intercept Scraping ─────────────")
     try:
         scraped_pages = await scraper.scrape_all_targets()
-    except Exception as e:
-        logger.critical(f"[Task] Scraper melempar exception tak terduga: {e}", exc_info=True)
+    except Exception as exc:
+        logger.critical(
+            f"[Task] Scraper melempar exception tidak tertangani: {exc}",
+            exc_info=True,
+        )
         return MarketReportPayload(
             run_id         = run_id,
             run_started_at = started_at,
             status         = AgentRunStatus.SCRAPER_ERROR,
-            error_details  = f"Scraper fatal: {str(e)[:500]}",
+            error_details  = f"Scraper fatal: {str(exc)[:500]}",
         )
 
     sources_scraped = sum(1 for p in scraped_pages if p.success)
     sources_failed  = sum(1 for p in scraped_pages if not p.success)
 
     if sources_scraped == 0:
-        logger.error("[Task] Tidak ada satu pun halaman berhasil di-scrape.")
+        logger.error(
+            "[Task] Tidak ada satu pun halaman berhasil di-intercept. "
+            "Periksa api_url_pattern di config.py dan koneksi internet."
+        )
         return MarketReportPayload(
             run_id          = run_id,
             run_started_at  = started_at,
             status          = AgentRunStatus.SCRAPER_ERROR,
             sources_scraped = 0,
             sources_failed  = sources_failed,
-            error_details   = "Zero successful scrape results.",
+            error_details   = "Zero successful network intercept results.",
         )
 
     logger.info(
-        f"[Task] Scraping selesai: {sources_scraped} berhasil, {sources_failed} gagal."
+        f"[Task] Scraping selesai: "
+        f"{sources_scraped} berhasil | {sources_failed} gagal."
     )
 
-    # ------------------------------------------------------------------
-    # TAHAP 2: LLM Analysis
-    # ------------------------------------------------------------------
-    logger.info("[Task] Tahap 2/3: Analisis LLM...")
+    # ──────────────────────────────────────────────────────────────────────────
+    # TAHAP 2: LLM Analysis + Lapisan Pertahanan 1
+    # ──────────────────────────────────────────────────────────────────────────
+    logger.info("[Task] ── Tahap 2/4: LLM Analysis (Lapisan 1 Anti-Leakage) ──")
     try:
-        entries, llm_parse_errors = await llm_analyzer.analyze_pages(scraped_pages)
-    except Exception as e:
-        logger.error(f"[Task] LLM analyzer error: {e}", exc_info=True)
+        raw_entries, llm_parse_errors, discarded_by_llm = await llm_analyzer.analyze_pages(
+            scraped_pages
+        )
+    except Exception as exc:
+        logger.error(
+            f"[Task] LLM Analyzer melempar exception tidak tertangani: {exc}",
+            exc_info=True,
+        )
         return MarketReportPayload(
-            run_id          = run_id,
-            run_started_at  = started_at,
-            status          = AgentRunStatus.LLM_ERROR,
-            sources_scraped = sources_scraped,
-            sources_failed  = sources_failed,
-            error_details   = f"LLM analyzer fatal: {str(e)[:500]}",
+            run_id           = run_id,
+            run_started_at   = started_at,
+            status           = AgentRunStatus.LLM_ERROR,
+            sources_scraped  = sources_scraped,
+            sources_failed   = sources_failed,
+            error_details    = f"LLM Analyzer fatal: {str(exc)[:500]}",
         )
 
-    if not entries:
-        logger.warning("[Task] LLM tidak menghasilkan entry harga yang valid.")
+    logger.info(
+        f"[Task] LLM selesai: "
+        f"{len(raw_entries)} entry dari LLM | "
+        f"{discarded_by_llm} dibuang di lapisan LLM | "
+        f"{llm_parse_errors} parse error."
+    )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # TAHAP 3: Double Validation — Lapisan Pertahanan Python
+    # ──────────────────────────────────────────────────────────────────────────
+    logger.info("[Task] ── Tahap 3/4: Double Validation (Lapisan 2 Python) ────")
+
+    clean_entries, discarded_by_python = _apply_python_whole_fruit_gate(
+        raw_entries, run_id
+    )
+
+    total_discarded = discarded_by_llm + discarded_by_python
+
+    logger.info(
+        f"[Task] Double Validation selesai:\n"
+        f"          Entry lolos LLM      : {len(raw_entries)}\n"
+        f"          Dibuang lapisan LLM  : {discarded_by_llm}\n"
+        f"          Dibuang lapisan Python: {discarded_by_python}\n"
+        f"          Entry FINAL valid    : {len(clean_entries)}\n"
+        f"          Total entry dibuang : {total_discarded} (pencegahan data leakage)"
+    )
+
+    # Tentukan status run berdasarkan hasil bersih
+    if not clean_entries:
+        logger.warning(
+            "[Task] Tidak ada entry harga valid setelah double validation. "
+            "Kemungkinan semua produk yang ditemukan adalah varian kupas/frozen/olahan."
+        )
         status = AgentRunStatus.NO_DATA
     elif sources_failed > 0:
         status = AgentRunStatus.PARTIAL
@@ -107,56 +222,62 @@ async def _run_pipeline() -> MarketReportPayload:
         status = AgentRunStatus.SUCCESS
 
     payload = MarketReportPayload(
-        run_id           = run_id,
-        run_started_at   = started_at,
-        status           = status,
-        entries          = entries,
-        sources_scraped  = sources_scraped,
-        sources_failed   = sources_failed,
-        llm_parse_errors = llm_parse_errors,
+        run_id            = run_id,
+        run_started_at    = started_at,
+        status            = status,
+        entries           = clean_entries,
+        sources_scraped   = sources_scraped,
+        sources_failed    = sources_failed,
+        llm_parse_errors  = llm_parse_errors,
+        entries_discarded = total_discarded,
     )
 
-    logger.info(
-        f"[Task] LLM selesai: {len(entries)} entry | "
-        f"status={status.value} | parse_errors={llm_parse_errors}"
-    )
-
-    # ------------------------------------------------------------------
-    # TAHAP 3: Kirim ke NestJS
-    # ------------------------------------------------------------------
-    logger.info("[Task] Tahap 3/3: Mengirim laporan ke NestJS...")
+    # ──────────────────────────────────────────────────────────────────────────
+    # TAHAP 4: Kirim ke NestJS
+    # ──────────────────────────────────────────────────────────────────────────
+    logger.info("[Task] ── Tahap 4/4: Pengiriman ke NestJS Backend ────────────")
     try:
         send_ok = await nestjs_client.send_report(payload)
         if not send_ok:
-            logger.error("[Task] Gagal mengirim laporan ke NestJS (semua retry habis).")
-            # Tetap lanjut — data sudah ada, hanya delivery yang gagal
-    except Exception as e:
-        logger.error(f"[Task] NestJS client error: {e}", exc_info=True)
+            logger.error(
+                "[Task] Gagal mengirim laporan ke NestJS (semua retry habis). "
+                "Data tersimpan di log untuk recovery manual."
+            )
+    except Exception as exc:
+        logger.error(
+            f"[Task] NestJS client melempar exception tidak tertangani: {exc}",
+            exc_info=True,
+        )
 
     logger.info(
-        f"[Task] === Market Intelligence Agent SELESAI | "
-        f"run_id={run_id} | entries={len(entries)} | status={status.value} ==="
+        f"[Task] ══════════════════════════════════════════════════════════\n"
+        f"[Task]  Market Intelligence Agent SELESAI\n"
+        f"[Task]  run_id={run_id} | entries={len(clean_entries)} | "
+        f"status={status.value} | discarded={total_discarded}\n"
+        f"[Task] ══════════════════════════════════════════════════════════"
     )
     return payload
 
 
 # ---------------------------------------------------------------------------
-# Public entry point
+# Public Entry Point
 # ---------------------------------------------------------------------------
 
 async def run_once() -> Optional[MarketReportPayload]:
     """
     Jalankan pipeline satu kali dengan proteksi:
-      1. Run Guard — tolak jika masih ada run yang berjalan
+      1. Run Guard    — tolak jika masih ada run yang berjalan
       2. Global Timeout — paksa berhenti jika melebihi batas waktu
 
-    Dipanggil oleh scheduler, atau bisa dipanggil manual untuk testing:
+    Dapat dipanggil langsung untuk testing:
+        import asyncio
         asyncio.run(run_once())
     """
     if _run_lock.locked():
         logger.warning(
-            "[Task] Run sebelumnya masih berjalan — run ini di-skip. "
-            "Pertimbangkan menambah interval scheduler jika ini sering terjadi."
+            "[Task] Run sebelumnya MASIH BERJALAN — run ini di-skip. "
+            "Jika ini sering terjadi, pertimbangkan mengurangi jumlah target "
+            "atau menambah interval scheduler."
         )
         return None
 
@@ -172,13 +293,14 @@ async def run_once() -> Optional[MarketReportPayload]:
             return result
         except asyncio.TimeoutError:
             logger.error(
-                f"[Task] Run dibatalkan paksa — melebihi timeout "
-                f"{SCHEDULER_CONFIG.max_run_duration_sec}s."
+                f"[Task] Run dibatalkan paksa — melebihi global timeout "
+                f"({SCHEDULER_CONFIG.max_run_duration_sec}s). "
+                "Pertimbangkan mengurangi jumlah target atau menaikkan timeout."
             )
             return None
-        except Exception as e:
+        except Exception as exc:
             logger.critical(
-                f"[Task] Error tidak tertangani di run_once(): {e}",
+                f"[Task] Error TIDAK TERTANGANI di run_once(): {exc}",
                 exc_info=True,
             )
             return None

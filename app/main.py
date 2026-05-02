@@ -94,11 +94,6 @@ async def _stop_scheduler() -> None:
 async def _stop_rate_limiter() -> None:
     await get_rate_limiter().stop_cleanup_task()
 
-
-# ---------------------------------------------------------------------------
-# Helper: tangani error startup/shutdown tanpa crash seluruh service
-# ---------------------------------------------------------------------------
-
 def _safe_startup(label: str, fn) -> None:
     logger.info(f"[Startup] {label}...")
     try:
@@ -131,20 +126,12 @@ async def _safe_shutdown_async(label: str, fn) -> None:
         logger.error(f"[Shutdown] Error saat stop {label}: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Lifespan
-# ---------------------------------------------------------------------------
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await _run_startup()
     yield
     await _run_shutdown()
 
-
-# ---------------------------------------------------------------------------
-# OpenAPI schema
-# ---------------------------------------------------------------------------
 
 def _build_openapi_schema(app: FastAPI) -> dict:
     if app.openapi_schema:
@@ -195,11 +182,6 @@ def _build_openapi_schema(app: FastAPI) -> dict:
     app.openapi_schema  = schema
     return schema
 
-
-# ---------------------------------------------------------------------------
-# App factory
-# ---------------------------------------------------------------------------
-
 def create_app() -> FastAPI:
     app = FastAPI(
         title       = settings.APP_NAME,
@@ -211,7 +193,6 @@ def create_app() -> FastAPI:
         openapi_url = "/openapi.json" if settings.DEBUG else None,
     )
 
-    # --- Middleware (urutan: terluar → terdalam) ---
     app.add_middleware(
         PayloadSizeLimitMiddleware,
         max_bytes = settings.max_file_size_bytes + (1024 * 1024),
@@ -238,7 +219,6 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
 
-    # --- Exception handlers ---
     @app.exception_handler(DurianServiceException)
     async def _service_exc(request, exc: DurianServiceException):
         return JSONResponse(

@@ -1,21 +1,4 @@
 # agents/market_intelligence/task.py
-"""
-Orchestrator Market Intelligence Agent.
-
-Changelog v2:
-  - Pipeline diperbarui untuk menerima 3-tuple dari llm_analyzer
-    (entries, parse_errors, entries_discarded_by_analyzer).
-  - Ditambahkan "Double Validation" layer Python sebagai lapisan pertahanan
-    KEDUA untuk mencegah data leakage:
-      * Lapisan 1 (LLM): LLM menandai is_whole_fruit=False dan tidak
-        memasukkan ke array (atau llm_analyzer.py membuangnya).
-      * Lapisan 2 (Python/task.py): Iterasi ulang output LLM dan tolak
-        SETIAP entry yang is_whole_fruit != True, meskipun LLM
-        "terlupa" atau menghasilkan entry yang lolos lapisan 1.
-  - `MarketReportPayload` diperbarui dengan field `entries_discarded`
-    untuk melacak total entry yang dibuang dari kedua lapisan.
-  - Run Guard dan Global Timeout dipertahankan.
-"""
 
 from __future__ import annotations
 
@@ -35,44 +18,18 @@ from agents.market_intelligence import scraper, llm_analyzer, nestjs_client
 
 logger = get_logger("agent.task")
 
-
-# ---------------------------------------------------------------------------
-# Run Guard
-# ---------------------------------------------------------------------------
-
 _run_lock = asyncio.Lock()
-
-
-# ---------------------------------------------------------------------------
-# Double Validation — Lapisan Pertahanan Python
-# ---------------------------------------------------------------------------
 
 def _apply_python_whole_fruit_gate(
     raw_entries: List[MarketPriceEntry],
     run_id:      str,
 ) -> Tuple[List[MarketPriceEntry], int]:
-    """
-    Lapisan pertahanan KEDUA (Python-level) terhadap data leakage.
-
-    Meskipun LLM Analyzer (lapisan pertama) sudah memfilter entry
-    is_whole_fruit=False, ada kemungkinan:
-    1. LLM "terlupa" mengikuti instruksi dan tetap menghasilkan entry
-       is_whole_fruit=False di JSON output-nya.
-    2. llm_analyzer._validate_and_filter_entries() melewatkan suatu edge case.
-
-    Fungsi ini melakukan iterasi FINAL sebagai safety net absolut.
-    Setiap entry yang is_whole_fruit != True akan dibuang dan dicatat.
-
-    Return:
-        (clean_entries, discarded_count_at_this_layer)
-    """
+   
     clean_entries: List[MarketPriceEntry] = []
     discarded_here: int = 0
 
     for entry in raw_entries:
         if not entry.is_whole_fruit:
-            # Ini seharusnya tidak terjadi jika lapisan LLM berjalan benar.
-            # Jika muncul di log ini, artinya ada regresi di LLM atau prompt.
             logger.error(
                 f"[Task][DoubleValidation] PERINGATAN: Entry dengan is_whole_fruit=False "
                 f"LOLOS dari lapisan LLM Analyzer! "
@@ -101,16 +58,8 @@ def _apply_python_whole_fruit_gate(
 
     return clean_entries, discarded_here
 
-
-# ---------------------------------------------------------------------------
-# Core Pipeline
-# ---------------------------------------------------------------------------
-
 async def _run_pipeline() -> MarketReportPayload:
-    """
-    Pipeline inti: Scraping → LLM Analysis → Double Validation → NestJS.
-    Dipanggil oleh run_once() yang sudah wrap dengan guard dan timeout.
-    """
+
     run_id     = str(uuid.uuid4())
     started_at = datetime.now(timezone.utc)
 
@@ -120,9 +69,6 @@ async def _run_pipeline() -> MarketReportPayload:
         f"[Task] ══════════════════════════════════════════════════════════"
     )
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # TAHAP 1: Network Intercept Scraping
-    # ──────────────────────────────────────────────────────────────────────────
     logger.info("[Task] ── Tahap 1/4: Network Intercept Scraping ─────────────")
     try:
         scraped_pages = await scraper.scrape_all_targets()
@@ -160,9 +106,6 @@ async def _run_pipeline() -> MarketReportPayload:
         f"{sources_scraped} berhasil | {sources_failed} gagal."
     )
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # TAHAP 2: LLM Analysis + Lapisan Pertahanan 1
-    # ──────────────────────────────────────────────────────────────────────────
     logger.info("[Task] ── Tahap 2/4: LLM Analysis (Lapisan 1 Anti-Leakage) ──")
     try:
         raw_entries, llm_parse_errors, discarded_by_llm = await llm_analyzer.analyze_pages(
@@ -189,9 +132,6 @@ async def _run_pipeline() -> MarketReportPayload:
         f"{llm_parse_errors} parse error."
     )
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # TAHAP 3: Double Validation — Lapisan Pertahanan Python
-    # ──────────────────────────────────────────────────────────────────────────
     logger.info("[Task] ── Tahap 3/4: Double Validation (Lapisan 2 Python) ────")
 
     clean_entries, discarded_by_python = _apply_python_whole_fruit_gate(
@@ -209,7 +149,6 @@ async def _run_pipeline() -> MarketReportPayload:
         f"          Total entry dibuang : {total_discarded} (pencegahan data leakage)"
     )
 
-    # Tentukan status run berdasarkan hasil bersih
     if not clean_entries:
         logger.warning(
             "[Task] Tidak ada entry harga valid setelah double validation. "
@@ -232,9 +171,6 @@ async def _run_pipeline() -> MarketReportPayload:
         entries_discarded = total_discarded,
     )
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # TAHAP 4: Kirim ke NestJS
-    # ──────────────────────────────────────────────────────────────────────────
     logger.info("[Task] ── Tahap 4/4: Pengiriman ke NestJS Backend ────────────")
     try:
         send_ok = await nestjs_client.send_report(payload)
@@ -259,20 +195,8 @@ async def _run_pipeline() -> MarketReportPayload:
     return payload
 
 
-# ---------------------------------------------------------------------------
-# Public Entry Point
-# ---------------------------------------------------------------------------
-
 async def run_once() -> Optional[MarketReportPayload]:
-    """
-    Jalankan pipeline satu kali dengan proteksi:
-      1. Run Guard    — tolak jika masih ada run yang berjalan
-      2. Global Timeout — paksa berhenti jika melebihi batas waktu
 
-    Dapat dipanggil langsung untuk testing:
-        import asyncio
-        asyncio.run(run_once())
-    """
     if _run_lock.locked():
         logger.warning(
             "[Task] Run sebelumnya MASIH BERJALAN — run ini di-skip. "

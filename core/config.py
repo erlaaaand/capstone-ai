@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     # [FIX BUG-09] MODEL_PATH default diperbarui ke model v10 (EfficientNetV2-S).
     # Default ini sebagai fallback jika .env tidak menyetel MODEL_PATH.
     # Nilai aktual selalu dibaca dari .env — pastikan .env sudah diperbarui.
-    MODEL_PATH: str = "models/weights/durian_v10.onnx"
+    MODEL_PATH: str = "models/weights/efficientnet_b0.onnx"
 
     # CLASS_NAMES: urutan WAJIB alphabetical sesuai folder training (indeks 0–4).
     # D101 sudah dihapus — tidak ada dalam training data model v10.

@@ -1,15 +1,4 @@
 # agents/market_intelligence/scheduler.py
-"""
-APScheduler setup untuk Market Intelligence Agent.
-
-Desain:
-  - Gunakan AsyncIOScheduler agar berjalan di event loop yang sama dengan FastAPI
-    TANPA memblokir — task.run_once() sendiri yang melakukan to_thread isolation
-    untuk operasi berat (Playwright).
-  - CronTrigger untuk eksekusi di jam off-peak (default 02:30 WIB).
-  - Satu instance scheduler (singleton) per proses.
-  - start() / stop() dipanggil dari lifespan context manager di main.py.
-"""
 
 from __future__ import annotations
 
@@ -26,11 +15,6 @@ from agents.market_intelligence.task import run_once
 logger = get_logger("agent.scheduler")
 
 _JOB_ID = "market_intelligence_agent"
-
-
-# ---------------------------------------------------------------------------
-# APScheduler event listeners
-# ---------------------------------------------------------------------------
 
 def _on_job_executed(event: JobExecutionEvent) -> None:
     if event.job_id != _JOB_ID:
@@ -54,15 +38,7 @@ def _on_job_error(event: JobExecutionEvent) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Singleton scheduler
-# ---------------------------------------------------------------------------
-
 class MarketIntelligenceScheduler:
-    """
-    Wrapper tipis di atas APScheduler AsyncIOScheduler.
-    Satu instance per proses — dikelola dari lifespan main.py.
-    """
 
     def __init__(self) -> None:
         self._scheduler: Optional[AsyncIOScheduler] = None
@@ -118,17 +94,8 @@ class MarketIntelligenceScheduler:
             logger.info("[Scheduler] Market Intelligence Scheduler dihentikan.")
 
     async def trigger_now(self) -> None:
-        """
-        Jalankan agent sekarang (untuk debugging/manual trigger).
-        Bisa dipanggil dari endpoint admin jika diperlukan.
-        """
         logger.info("[Scheduler] Manual trigger: menjalankan agent sekarang...")
         await run_once()
-
-
-# ---------------------------------------------------------------------------
-# Module-level singleton
-# ---------------------------------------------------------------------------
 
 _scheduler_instance: Optional[MarketIntelligenceScheduler] = None
 

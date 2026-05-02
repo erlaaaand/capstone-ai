@@ -1,12 +1,4 @@
 # agents/market_intelligence/nestjs_client.py
-"""
-HTTP client untuk mengirim MarketReportPayload ke NestJS backend.
-
-Fitur:
-  - Retry dengan exponential backoff
-  - HMAC-SHA256 signature header untuk validasi internal-service
-  - Tidak memblokir event loop FastAPI
-"""
 
 from __future__ import annotations
 
@@ -26,7 +18,6 @@ logger = get_logger("agent.nestjs_client")
 
 
 def _build_signature(payload_bytes: bytes, secret: str) -> str:
-    """Buat HMAC-SHA256 signature. Format: `sha256=<hex_digest>`."""
     if not secret:
         return ""
     digest = hmac.new(secret.encode("utf-8"), payload_bytes, hashlib.sha256).hexdigest()
@@ -37,10 +28,7 @@ async def send_report(
     payload: MarketReportPayload,
     config:  Optional[NestJSClientConfig] = None,
 ) -> bool:
-    """
-    Kirim MarketReportPayload ke NestJS via HTTP POST.
-    Kembalikan True jika berhasil (2xx), False jika semua retry gagal.
-    """
+
     if config is None:
         config = NESTJS_CONFIG
 

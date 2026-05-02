@@ -1,17 +1,4 @@
 # agents/market_intelligence/llm_analyzer.py
-"""
-LLM Analyzer — ekstrak data harga dari JSON intercept menggunakan Ollama.
-
-Changelog v2 (Major Refactor):
-  - Input sekarang adalah JSON intercept API e-commerce (bukan HTML/DOM teks).
-  - _SYSTEM_PROMPT dirombak total menjadi "Strict Gatekeeper":
-      1. REJECT MUTLAK: produk dengan kata kunci kupas/frozen/box/400gr/dll → [].
-      2. NORMALISASI MATEMATIKA: harga wajib di-convert ke per-Kg dengan CoT.
-      3. OUTPUT WAJIB mengisi 3 field audit trail baru: is_whole_fruit,
-         weight_reference, notes.
-  - Mendukung 5 varietas: D13, D197, D2, D200, D24.
-  - Strategi retry + repair prompt tetap dipertahankan.
-"""
 
 from __future__ import annotations
 
@@ -26,11 +13,6 @@ from agents.market_intelligence.config import OLLAMA_CONFIG, OllamaConfig
 from agents.market_intelligence.schemas import MarketPriceEntry, ScrapedPage
 
 logger = get_logger("agent.llm_analyzer")
-
-
-# ---------------------------------------------------------------------------
-# Prompt Templates
-# ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """\
 Kamu adalah analis data harga komoditas pertanian yang SANGAT KETAT dan TERSTRUKTUR.
@@ -159,15 +141,7 @@ Output sebelumnya (untuk referensi perbaikan):
 {previous_output}"""
 
 
-# ---------------------------------------------------------------------------
-# Ollama Client
-# ---------------------------------------------------------------------------
-
 async def _call_ollama(messages: List[dict], config: OllamaConfig) -> str:
-    """
-    Kirim messages ke Ollama /api/chat. Kembalikan string content.
-    Raise httpx exception jika koneksi/timeout gagal.
-    """
     payload = {
         "model":   config.model,
         "messages": messages,
@@ -188,17 +162,7 @@ async def _call_ollama(messages: List[dict], config: OllamaConfig) -> str:
         raise ValueError(f"Ollama mengembalikan respons kosong. Raw: {data}")
     return content
 
-
-# ---------------------------------------------------------------------------
-# JSON Parsing & Validation
-# ---------------------------------------------------------------------------
-
 def _extract_json_array(text: str) -> Optional[list]:
-    """
-    Parse JSON array dari output LLM.
-    Menangani: plain JSON, markdown code fence, wrapper dict.
-    """
-    # Hapus markdown code fence jika ada
     cleaned = re.sub(r"```(?:json)?\s*", "", text).strip()
     cleaned = re.sub(r"```\s*$", "", cleaned).strip()
 
@@ -206,7 +170,6 @@ def _extract_json_array(text: str) -> Optional[list]:
         parsed = json.loads(cleaned)
         if isinstance(parsed, list):
             return parsed
-        # LLM kadang membungkus dalam {"data": [...]} atau {"results": [...]}
         if isinstance(parsed, dict):
             for key in ("data", "results", "entries", "prices", "products"):
                 if isinstance(parsed.get(key), list):
@@ -215,7 +178,6 @@ def _extract_json_array(text: str) -> Optional[list]:
     except json.JSONDecodeError:
         pass
 
-    # Last resort: cari array dengan regex (menangani partial output)
     m = re.search(r"\[.*\]", cleaned, re.DOTALL)
     if m:
         try:
@@ -233,16 +195,6 @@ def _validate_and_filter_entries(
     raw_list:    list,
     source_name: str,
 ) -> Tuple[List[MarketPriceEntry], int, int]:
-    """
-    Validasi tiap elemen via Pydantic.
-
-    Return:
-        (valid_whole_entries, pydantic_error_count, non_whole_count)
-        - valid_whole_entries: entry yang lolos Pydantic DAN is_whole_fruit=True
-        - pydantic_error_count: entry yang gagal validasi Pydantic schema
-        - non_whole_count: entry yang valid Pydantic tapi is_whole_fruit=False
-          (ini adalah data leakage yang berhasil dicegah di layer LLM)
-    """
     valid_entries: List[MarketPriceEntry] = []
     pydantic_errors: int = 0
     non_whole_count: int = 0
@@ -258,7 +210,6 @@ def _validate_and_filter_entries(
         try:
             entry = MarketPriceEntry.model_validate(item)
 
-            # Cek is_whole_fruit di level analyzer (lapisan pertahanan pertama)
             if not entry.is_whole_fruit:
                 logger.warning(
                     f"[LLM] Entry #{i} '{source_name}' ditandai is_whole_fruit=False "
@@ -279,21 +230,11 @@ def _validate_and_filter_entries(
 
     return valid_entries, pydantic_errors, non_whole_count
 
-
-# ---------------------------------------------------------------------------
-# Public Interface
-# ---------------------------------------------------------------------------
-
 async def analyze_page(
     page:   ScrapedPage,
     config: Optional[OllamaConfig] = None,
 ) -> Tuple[List[MarketPriceEntry], int, int]:
-    """
-    Analisis satu ScrapedPage yang berisi JSON intercept.
 
-    Return:
-        (valid_entries, parse_error_count, discarded_non_whole_count)
-    """
     if config is None:
         config = OLLAMA_CONFIG
 
@@ -301,7 +242,6 @@ async def analyze_page(
         logger.info(f"[LLM] Skip '{page.source_name}' — halaman gagal di-intercept.")
         return [], 0, 0
 
-    # Truncate jika JSON terlalu panjang untuk context window
     raw_json = page.raw_json[: config.max_input_chars]
     if len(page.raw_json) > config.max_input_chars:
         logger.info(
@@ -408,12 +348,7 @@ async def analyze_pages(
     pages:  List[ScrapedPage],
     config: Optional[OllamaConfig] = None,
 ) -> Tuple[List[MarketPriceEntry], int, int]:
-    """
-    Analisis semua ScrapedPage secara sequential.
 
-    Return:
-        (all_entries, total_parse_errors, total_entries_discarded)
-    """
     all_entries:      List[MarketPriceEntry] = []
     total_errors:     int = 0
     total_discarded:  int = 0

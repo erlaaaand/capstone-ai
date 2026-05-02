@@ -1,19 +1,4 @@
 # agents/market_intelligence/schemas.py
-"""
-Pydantic models untuk Market Intelligence Agent.
-
-Tiga layer schema:
-  1. ScrapedPage          — output mentah dari scraper.py (kini berupa JSON string)
-  2. MarketPriceEntry     — satu entri harga yang berhasil di-extract LLM
-  3. MarketReportPayload  — payload final yang dikirim ke NestJS
-
-Changelog v2:
-  - DurianVariety diperluas: D13, D24, D2 ditambahkan selain D197 & D200.
-  - MarketPriceEntry: 3 field audit trail baru ditambahkan untuk mencegah
-    data leakage (is_whole_fruit, weight_reference, notes).
-  - ScrapedPage: field `raw_text` diganti `raw_json` untuk merefleksikan
-    bahwa scraper kini mengirimkan JSON intercept, bukan HTML/teks DOM.
-"""
 
 from __future__ import annotations
 
@@ -23,42 +8,14 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-
-# ---------------------------------------------------------------------------
-# Enum: Kode varietas yang ditangani agent ini
-# ---------------------------------------------------------------------------
-
 class DurianVariety(str, Enum):
-    """
-    Lima varietas durian premium yang dimonitor oleh Market Intelligence Agent.
-
-    Kode mengikuti sistem kode resmi DOA (Department of Agriculture) Malaysia.
-    Urutan alphabetical agar konsisten dengan CLASS_NAMES di .env dan
-    class_indices.json.
-    """
     GOLDEN_BUN  = "D13"    # D13  — Golden Bun (Johor)
     MUSANG_KING = "D197"   # D197 — Musang King / Mao Shan Wang / Raja Kunyit (Kelantan)
     DATO_NINA   = "D2"     # D2   — Dato Nina (Melaka)
     DURI_HITAM  = "D200"   # D200 — Duri Hitam / Black Thorn / Ochee (Penang)
     SULTAN      = "D24"    # D24  — Sultan / Bukit Merah (Perak/Selangor)
 
-
-# ---------------------------------------------------------------------------
-# Layer 1: Raw scraping result (JSON intercept)
-# ---------------------------------------------------------------------------
-
 class ScrapedPage(BaseModel):
-    """
-    Hasil intercept Playwright sebelum diproses LLM.
-
-    Perbedaan dari versi sebelumnya:
-    - `raw_json` menggantikan `raw_text`. Isinya adalah string JSON (bisa satu
-      objek atau array) yang didapat dari network response intercept, bukan
-      teks HTML yang di-scrape dari DOM.
-    - Dengan format JSON, LLM mendapat input terstruktur sehingga lebih mudah
-      membedakan "durian kupas/frozen" dari "durian utuh" hanya dari field
-      nama produk atau deskripsi, tanpa harus mem-parse HTML noise.
-    """
 
     source_name:   str       = Field(..., description="Nama sumber (dari ScrapingTarget.name).")
     source_url:    str       = Field(..., description="URL halaman yang di-navigate Playwright.")
@@ -80,29 +37,7 @@ class ScrapedPage(BaseModel):
             raise ValueError("raw_json tidak boleh kosong jika success=True.")
         return v
 
-
-# ---------------------------------------------------------------------------
-# Layer 2: Satu entry harga hasil analisis LLM
-# ---------------------------------------------------------------------------
-
 class MarketPriceEntry(BaseModel):
-    """
-    Satu data point harga yang berhasil di-ekstrak dari JSON intercept.
-
-    FIELD AUDIT TRAIL BARU (v2):
-    - is_whole_fruit:    Gatekeeper utama. HANYA True jika produk adalah
-                         durian UTUH dengan kulit. False untuk kupas/frozen/dll.
-    - weight_reference:  Menyimpan berat asli dari listing penjual SEBELUM
-                         normalisasi (misal: "2 buah @2kg", "1 box 500gr").
-                         Berguna untuk audit kalkulasi LLM.
-    - notes:             Chain-of-Thought (CoT) LLM dalam melakukan normalisasi
-                         harga ke satuan per-Kg. Menjadi bukti bahwa kalkulasi
-                         dilakukan dengan benar.
-
-    Semua field harga dalam satuan IDR (Rupiah) per Kg.
-    """
-
-    # --- Identifikasi Produk ---
     variety_code:       DurianVariety = Field(
         ...,
         description="Kode DOA varietas. D13/D197/D2/D200/D24.",
@@ -197,10 +132,6 @@ class MarketPriceEntry(BaseModel):
         ),
     )
 
-    # ---------------------------------------------------------------------------
-    # Validators
-    # ---------------------------------------------------------------------------
-
     @model_validator(mode="after")
     def at_least_one_price_present(self) -> MarketPriceEntry:
         prices = [
@@ -239,26 +170,9 @@ class MarketPriceEntry(BaseModel):
 
     @model_validator(mode="after")
     def whole_fruit_gate(self) -> MarketPriceEntry:
-        """
-        Validator yang menegaskan konsistensi data.
-        Jika LLM menandai is_whole_fruit=False tapi tetap mengisi harga,
-        kita reset semua harga ke None untuk mencegah data leakage
-        sebelum validasi Pydantic at_least_one_price_present berjalan.
-
-        CATATAN: Validasi Python di task.py adalah lapisan pertahanan utama.
-        Validator ini adalah lapisan kedua (defense in depth).
-        """
         if not self.is_whole_fruit:
-            # Tidak perlu raise — task.py yang akan membuang entry ini.
-            # Log akan dicatat di task.py. Biarkan object terbentuk agar
-            # bisa di-inspect untuk keperluan debugging jika diperlukan.
             pass
         return self
-
-
-# ---------------------------------------------------------------------------
-# Layer 3: Final payload ke NestJS
-# ---------------------------------------------------------------------------
 
 class AgentRunStatus(str, Enum):
     SUCCESS       = "success"
@@ -269,15 +183,6 @@ class AgentRunStatus(str, Enum):
 
 
 class MarketReportPayload(BaseModel):
-    """
-    Payload lengkap yang dikirim ke NestJS endpoint `/api/market-intelligence/ingest`.
-
-    Field `entries_discarded` (v2):
-    Menghitung berapa entry LLM yang dibuang karena is_whole_fruit=False.
-    Digunakan untuk monitoring kualitas data dan mendeteksi apakah
-    sumber data mengandung banyak produk olahan/kupas.
-    """
-
     agent_version:  str             = Field(default="2.0.0")
     run_id:         str             = Field(..., description="UUID unik per run agen.")
     run_started_at: datetime        = Field(..., description="Waktu mulai run agen.")

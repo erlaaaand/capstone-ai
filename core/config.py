@@ -64,6 +64,12 @@ VARIETY_MAP: Dict[str, VarietyInfo] = {
             "di bagian bawah dan ujung duri berwarna kehitaman."
         ),
     ),
+    "local": VarietyInfo(
+        display_name="Durian Lokal",
+        local_name="Local / Durian Lokal",
+        origin="Indonesia",
+        description="Durian asli dari Indonesia dengan ciri khas dan rasa yang unik.",
+    ),
 }
 
 _UNKNOWN_VARIETY = VarietyInfo(
@@ -222,7 +228,6 @@ class Settings(BaseSettings):
 
     @property
     def clip_revision(self) -> Optional[str]:
-        """None jika kosong agar Hugging Face mengambil latest; set untuk pin."""
         return self.CLIP_REVISION_HASH if self.CLIP_REVISION_HASH.strip() else None
 
 

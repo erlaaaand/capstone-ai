@@ -30,6 +30,84 @@ from agents.market_intelligence.scheduler import get_scheduler
 logger = get_logger(__name__)
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Startup helpers
+# ──────────────────────────────────────────────────────────────────────────
+
+def _load_api_keys() -> None:
+    get_key_manager().load_keys()
+
+
+def _load_onnx_model() -> None:
+    get_model_loader().load_model()
+    logger.info("[Startup] ONNX model siap menerima request.")
+
+
+def _load_clip_model() -> None:
+    ready = CLIPService.warmup()
+    if ready:
+        logger.info("[Startup] CLIP model siap.")
+    else:
+        logger.warning(
+            "[Startup] CLIP model gagal dimuat. "
+            "Validasi zero-shot dinonaktifkan — semua gambar akan diizinkan."
+        )
+
+
+async def _start_rate_limiter() -> None:
+    await get_rate_limiter().start_cleanup_task()
+    logger.info("[Startup] Rate limiter cleanup task aktif.")
+
+
+async def _start_scheduler() -> None:
+    await get_scheduler().start()
+    logger.info("[Startup] Market Intelligence Agent scheduler aktif.")
+
+
+async def _stop_scheduler() -> None:
+    await get_scheduler().stop()
+
+
+async def _stop_rate_limiter() -> None:
+    await get_rate_limiter().stop_cleanup_task()
+
+
+def _safe_startup(label: str, fn) -> None:
+    logger.info(f"[Startup] {label}...")
+    try:
+        fn()
+    except Exception as e:
+        logger.critical(f"[Startup] Gagal — {label}: {e}", exc_info=True)
+
+
+async def _safe_startup_async(label: str, fn) -> None:
+    logger.info(f"[Startup] {label}...")
+    try:
+        await fn()
+    except Exception as e:
+        logger.error(
+            f"[Startup] Gagal — {label}: {e}. "
+            "Service tetap berjalan tanpa fitur ini.",
+            exc_info=True,
+        )
+
+
+def _safe_shutdown(label: str, fn) -> None:
+    try:
+        fn()
+        logger.info(f"[Shutdown] {label} dihentikan.")
+    except Exception as e:
+        logger.error(f"[Shutdown] Error saat stop {label}: {e}", exc_info=True)
+
+
+async def _safe_shutdown_async(label: str, fn) -> None:
+    try:
+        await fn()
+        logger.info(f"[Shutdown] {label} dihentikan.")
+    except Exception as e:
+        logger.error(f"[Shutdown] Error saat stop {label}: {e}", exc_info=True)
+
+
 async def _run_startup() -> None:
     logger.info("=" * 60)
     logger.info(f"  Memulai {settings.APP_NAME} v{settings.APP_VERSION}")
@@ -59,68 +137,9 @@ async def _run_shutdown() -> None:
     logger.info("[Shutdown] Selesai.")
 
 
-def _load_api_keys() -> None:
-    get_key_manager().load_keys()
-
-def _load_onnx_model() -> None:
-    get_model_loader().load_model()
-    logger.info("[Startup] ONNX model siap menerima request.")
-
-def _load_clip_model() -> None:
-    ready = CLIPService.warmup()
-    if ready:
-        logger.info("[Startup] CLIP model siap.")
-    else:
-        logger.warning(
-            "[Startup] CLIP model gagal dimuat. "
-            "Validasi zero-shot dinonaktifkan — semua gambar akan diizinkan."
-        )
-
-async def _start_rate_limiter() -> None:
-    await get_rate_limiter().start_cleanup_task()
-    logger.info("[Startup] Rate limiter cleanup task aktif.")
-
-async def _start_scheduler() -> None:
-    await get_scheduler().start()
-    logger.info("[Startup] Market Intelligence Agent scheduler aktif.")
-
-async def _stop_scheduler() -> None:
-    await get_scheduler().stop()
-
-async def _stop_rate_limiter() -> None:
-    await get_rate_limiter().stop_cleanup_task()
-
-def _safe_startup(label: str, fn) -> None:
-    logger.info(f"[Startup] {label}...")
-    try:
-        fn()
-    except Exception as e:
-        logger.critical(f"[Startup] Gagal — {label}: {e}")
-
-async def _safe_startup_async(label: str, fn) -> None:
-    logger.info(f"[Startup] {label}...")
-    try:
-        await fn()
-    except Exception as e:
-        logger.error(
-            f"[Startup] Gagal — {label}: {e}. "
-            "Service tetap berjalan tanpa fitur ini."
-        )
-
-def _safe_shutdown(label: str, fn) -> None:
-    try:
-        fn()
-        logger.info(f"[Shutdown] {label} dihentikan.")
-    except Exception as e:
-        logger.error(f"[Shutdown] Error saat stop {label}: {e}")
-
-async def _safe_shutdown_async(label: str, fn) -> None:
-    try:
-        await fn()
-        logger.info(f"[Shutdown] {label} dihentikan.")
-    except Exception as e:
-        logger.error(f"[Shutdown] Error saat stop {label}: {e}")
-
+# ──────────────────────────────────────────────────────────────────────────
+# Lifespan
+# ──────────────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -129,6 +148,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await _run_shutdown()
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# OpenAPI schema
+# ──────────────────────────────────────────────────────────────────────────
 
 def _build_openapi_schema(app: FastAPI) -> dict:
     if app.openapi_schema:
@@ -149,8 +171,9 @@ def _build_openapi_schema(app: FastAPI) -> dict:
             "diperbarui otomatis setiap hari oleh Market Intelligence Agent.\n\n"
             "**Endpoint:** `GET /api/v1/market/prices`\n\n"
             "**Endpoint:** `GET /api/v1/market/report`\n\n"
+            "**Endpoint:** `GET /api/v1/market/diagnostics` *(Admin)*\n\n"
             "### Autentikasi\n"
-            "Semua endpoint memerlukan API key yang valid.\n\n"
+            "Semua endpoint (kecuali `/ping`) memerlukan API key yang valid.\n\n"
             "**Header:** `X-API-Key: dk_live_your_key_here`\n\n"
             "**Alternatif:** `Authorization: Bearer dk_live_your_key_here`\n\n"
             "### Rate Limiting\n"
@@ -183,10 +206,14 @@ def _build_openapi_schema(app: FastAPI) -> dict:
             "description":  "Bearer token — masukkan API key setelah 'Bearer '.",
         },
     }
-    schema["security"] = [{"ApiKeyAuth": []}, {"BearerAuth": []}]
-    app.openapi_schema  = schema
+    schema["security"]    = [{"ApiKeyAuth": []}, {"BearerAuth": []}]
+    app.openapi_schema    = schema
     return schema
 
+
+# ──────────────────────────────────────────────────────────────────────────
+# App factory
+# ──────────────────────────────────────────────────────────────────────────
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -199,13 +226,14 @@ def create_app() -> FastAPI:
         openapi_url = "/openapi.json" if settings.DEBUG else None,
     )
 
+    # ── Middleware (LIFO — last added = outermost) ────────────────────────
     app.add_middleware(
         PayloadSizeLimitMiddleware,
         max_bytes=settings.max_file_size_bytes + (1024 * 1024),
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 
-    allowed_hosts = settings.ALLOWED_HOSTS if hasattr(settings, "ALLOWED_HOSTS") else ["*"]
+    allowed_hosts = settings.ALLOWED_HOSTS
     if allowed_hosts != ["*"]:
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
@@ -217,14 +245,15 @@ def create_app() -> FastAPI:
         allow_headers     = ["X-API-Key", "Authorization", "Content-Type", "Accept"],
         expose_headers    = [
             "X-Request-ID",
-            "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset",
-            "X-API-Version",
+            "X-RateLimit-Limit", "X-RateLimit-Remaining",
+            "X-RateLimit-Reset", "X-API-Version",
         ],
         max_age = 600,
     )
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
 
+    # ── Exception Handlers ────────────────────────────────────────────────
     @app.exception_handler(DurianServiceException)
     async def _service_exc(request, exc: DurianServiceException):
         return JSONResponse(
@@ -243,8 +272,9 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code = 404,
             content     = {
-                "success": False, "error": "NotFound",
-                "detail":  f"Endpoint '{request.url.path}' tidak ditemukan.",
+                "success":    False,
+                "error":      "NotFound",
+                "detail":     f"Endpoint '{request.url.path}' tidak ditemukan.",
                 "request_id": getattr(request.state, "request_id", "unknown"),
             },
         )
@@ -254,12 +284,14 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code = 405,
             content     = {
-                "success": False, "error": "MethodNotAllowed",
-                "detail":  f"Method '{request.method}' tidak diizinkan di '{request.url.path}'.",
+                "success":    False,
+                "error":      "MethodNotAllowed",
+                "detail":     f"Method '{request.method}' tidak diizinkan di '{request.url.path}'.",
                 "request_id": getattr(request.state, "request_id", "unknown"),
             },
         )
 
+    # ── Root ──────────────────────────────────────────────────────────────
     @app.get("/", include_in_schema=False)
     async def root():
         return {
@@ -268,15 +300,18 @@ def create_app() -> FastAPI:
             "status":        "operational",
             "docs":          "/docs" if settings.DEBUG else "disabled (production)",
             "endpoints": {
-                "predict":       "POST /api/v1/predict",
-                "market_prices": "GET /api/v1/market/prices",
-                "market_report": "GET /api/v1/market/report",
-                "health":        "GET /api/v1/health",
+                "predict":            "POST /api/v1/predict",
+                "market_prices":      "GET /api/v1/market/prices",
+                "market_report":      "GET /api/v1/market/report",
+                "market_diagnostics": "GET /api/v1/market/diagnostics",
+                "health":             "GET /api/v1/health",
+                "ping":               "GET /api/v1/ping",
             },
             "auth_required": True,
             "auth_header":   "X-API-Key",
         }
 
+    # ── Routers ───────────────────────────────────────────────────────────
     app.include_router(api_router)
     app.openapi = lambda: _build_openapi_schema(app)
 

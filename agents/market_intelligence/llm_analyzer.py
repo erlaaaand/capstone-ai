@@ -141,7 +141,9 @@ Jika tidak bisa diperbaiki atau tidak ada data valid, kembalikan: []
 Output sebelumnya (untuk referensi perbaikan):
 {previous_output}"""
 
+
 async def _call_ollama(messages: List[dict], config: OllamaConfig) -> str:
+    """Panggil Ollama API dan kembalikan content respons."""
     payload = {
         "model":    config.model,
         "messages": messages,
@@ -149,7 +151,7 @@ async def _call_ollama(messages: List[dict], config: OllamaConfig) -> str:
         "options":  {
             "temperature": config.temperature,
             "top_p":       config.top_p,
-            "num_predict": 4096,
+            "num_predict": config.num_predict,
         },
     }
     async with httpx.AsyncClient(timeout=config.timeout_sec) as client:
@@ -159,14 +161,16 @@ async def _call_ollama(messages: List[dict], config: OllamaConfig) -> str:
 
     content: str = data.get("message", {}).get("content", "")
     if not content:
-        raise ValueError(f"Ollama mengembalikan respons kosong. Raw: {data}")
+        raise ValueError(f"Ollama mengembalikan respons kosong. Raw: {data!r}")
     return content
 
 
 def _extract_json_array(text: str) -> Optional[list]:
+    """Ekstrak array JSON dari teks LLM, dengan fallback ke regex."""
     cleaned = re.sub(r"```(?:json)?\s*", "", text).strip()
     cleaned = re.sub(r"```\s*$", "", cleaned).strip()
 
+    # Coba parse langsung
     try:
         parsed = json.loads(cleaned)
         if isinstance(parsed, list):
@@ -179,6 +183,7 @@ def _extract_json_array(text: str) -> Optional[list]:
     except json.JSONDecodeError:
         pass
 
+    # Fallback: cari pola array JSON dengan regex (greedy → non-greedy kurang cocok)
     m = re.search(r"\[.*\]", cleaned, re.DOTALL)
     if m:
         try:
@@ -191,11 +196,13 @@ def _extract_json_array(text: str) -> Optional[list]:
 
     return None
 
+
 def _validate_and_filter_entries(
     raw_list:    list,
     source_name: str,
 ) -> Tuple[List[MarketPriceEntry], int, int]:
-    valid_entries:  List[MarketPriceEntry] = []
+
+    valid_entries:   List[MarketPriceEntry] = []
     pydantic_errors: int = 0
     non_whole_count: int = 0
 
@@ -231,6 +238,7 @@ def _validate_and_filter_entries(
 
     return valid_entries, pydantic_errors, non_whole_count
 
+
 async def analyze_page(
     page:   ScrapedPage,
     config: Optional[OllamaConfig] = None,
@@ -250,7 +258,7 @@ async def analyze_page(
             f"{len(page.raw_json)} → {config.max_input_chars} chars."
         )
 
-    messages = [
+    messages: List[dict] = [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {
             "role": "user",
@@ -264,12 +272,13 @@ async def analyze_page(
 
     parse_errors    = 0
     total_discarded = 0
+    max_attempts    = config.max_parse_retries + 1
 
-    for attempt in range(1, config.max_parse_retries + 2):
+    for attempt in range(1, max_attempts + 1):
         try:
             logger.info(
                 f"[LLM] Memanggil Ollama: '{page.source_name}' "
-                f"(model={config.model}, attempt={attempt})"
+                f"(model={config.model}, attempt={attempt}/{max_attempts})"
             )
             llm_output = await _call_ollama(messages, config)
             raw_list   = _extract_json_array(llm_output)
@@ -277,11 +286,13 @@ async def analyze_page(
             if raw_list is None:
                 logger.warning(
                     f"[LLM] Output non-JSON dari '{page.source_name}' "
-                    f"(attempt={attempt}): {llm_output[:300]}"
+                    f"(attempt={attempt}): {llm_output[:300]!r}"
                 )
                 parse_errors += 1
-                if attempt <= config.max_parse_retries:
-                    messages += [
+
+                if attempt < max_attempts:
+                    messages = [
+                        *messages,
                         {"role": "assistant", "content": llm_output},
                         {
                             "role": "user",
@@ -291,8 +302,9 @@ async def analyze_page(
                         },
                     ]
                     continue
+
                 logger.error(
-                    f"[LLM] Semua {config.max_parse_retries + 1} attempt habis "
+                    f"[LLM] Semua {max_attempts} attempt habis "
                     f"untuk '{page.source_name}'."
                 )
                 return [], parse_errors, total_discarded
@@ -318,23 +330,27 @@ async def analyze_page(
             )
             return entries, parse_errors, total_discarded
 
-        except httpx.ConnectError:
+        except httpx.ConnectError as exc:
             logger.error(
                 f"[LLM] Tidak bisa terhubung ke Ollama di {config.base_url}. "
+                f"Detail: {exc}. "
                 "Pastikan Ollama berjalan: `ollama serve`"
             )
             return [], parse_errors + 1, total_discarded
+
         except httpx.TimeoutException:
             logger.error(
                 f"[LLM] Timeout ({config.timeout_sec}s) saat analisis '{page.source_name}'."
             )
             return [], parse_errors + 1, total_discarded
+
         except httpx.HTTPStatusError as exc:
             logger.error(
                 f"[LLM] HTTP error dari Ollama: {exc.response.status_code} "
-                f"untuk '{page.source_name}'."
+                f"untuk '{page.source_name}'. Body: {exc.response.text[:200]}"
             )
             return [], parse_errors + 1, total_discarded
+
         except Exception as exc:
             logger.error(
                 f"[LLM] Error tak terduga saat analisis '{page.source_name}': {exc}",
@@ -369,6 +385,7 @@ async def analyze_pages(
             )
             total_errors += 1
             continue
+
         entries, errors, discarded = result
         all_entries.extend(entries)
         total_errors    += errors

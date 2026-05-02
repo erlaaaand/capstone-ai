@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -81,11 +81,11 @@ _UNKNOWN_VARIETY = VarietyInfo(
 
 
 def get_variety_info(code: str) -> VarietyInfo:
-    return VARIETY_MAP.get(code.strip(), _UNKNOWN_VARIETY)
+    return VARIETY_MAP.get(code.strip().upper(), _UNKNOWN_VARIETY)
 
 
 def get_display_name(code: str) -> str:
-    info = VARIETY_MAP.get(code.strip())
+    info = VARIETY_MAP.get(code.strip().upper())
     return info.display_name if info else code
 
 
@@ -97,18 +97,18 @@ class Settings(BaseSettings):
         extra             = "ignore",
     )
 
-    # ── Application ──────────────────────────────────────────────────────────
+    # ── Application ───────────────────────────────────────────────────────
     APP_NAME:    str  = "Durian Classification API"
     APP_VERSION: str  = "1.0.0"
     DEBUG:       bool = False
     LOG_LEVEL:   str  = "INFO"
 
-    # ── Model ─────────────────────────────────────────────────────────────────
+    # ── Model ─────────────────────────────────────────────────────────────
     MODEL_PATH:  str  = "models/weights/efficientnet_b0.onnx"
     CLASS_NAMES: str  = "D13,D197,D2,D200,D24"
     IMAGE_SIZE:  int  = 224
 
-    # ── Image Processing ──────────────────────────────────────────────────────
+    # ── Image Processing ──────────────────────────────────────────────────
     ENABLE_ENHANCEMENT:   bool  = True
     ENABLE_CLAHE:         bool  = True
     ENABLE_SHARPENING:    bool  = True
@@ -118,33 +118,29 @@ class Settings(BaseSettings):
     ALLOWED_EXTENSIONS: str = "jpg,jpeg,png,webp"
     MAX_FILE_SIZE_MB:   int = 10
 
-    # ── CLIP / Zero-Shot Validation ───────────────────────────────────────────
-    # [FIX BUG #4 & #5] Model ID dan revision hash dibaca dari .env,
-    # menghapus hardcode di services/clip_service.py.
+    # ── CLIP / Zero-Shot Validation ───────────────────────────────────────
     CLIP_MODEL_ID:             str   = "openai/clip-vit-base-patch32"
-    CLIP_REVISION_HASH:        str   = ""   # Pin ke commit hash untuk keamanan supply chain
+    CLIP_REVISION_HASH:        str   = ""
     CLIP_NON_DURIAN_THRESHOLD: float = 0.40
 
-    # ── Security ──────────────────────────────────────────────────────────────
-    # [FIX BUG #2] PBKDF2 iterations dikontrol via .env.
-    # OWASP 2023 merekomendasikan >= 600.000 untuk PBKDF2-HMAC-SHA256.
+    # ── Security ──────────────────────────────────────────────────────────
     PBKDF2_ITERATIONS: int = 600_000
 
-    # [FIX BUG #7] Rate limit parameters dikontrol via .env.
+    # ── Rate Limiting ─────────────────────────────────────────────────────
     RATE_LIMIT_WINDOW_SECONDS: int = 60
     BURST_LIMIT_PER_SECOND:    int = 20
 
-    # [FIX BUG #8] OpenAPI contact info dikontrol via .env.
+    # ── OpenAPI Contact ───────────────────────────────────────────────────
     API_SUPPORT_EMAIL: str = "api-support@yourdomain.com"
     API_SUPPORT_NAME:  str = "Durian API Support"
 
-    # ── Network ───────────────────────────────────────────────────────────────
+    # ── Network ───────────────────────────────────────────────────────────
     CORS_ORIGINS_STR:  str = "http://localhost:3000,http://localhost:8080"
     ALLOWED_HOSTS_STR: str = "*"
 
     API_KEY_REQUIRED: bool = True
 
-    # ── Validators ────────────────────────────────────────────────────────────
+    # ── Validators ────────────────────────────────────────────────────────
 
     @field_validator("LOG_LEVEL")
     @classmethod
@@ -152,7 +148,7 @@ class Settings(BaseSettings):
         valid = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
         upper = v.upper()
         if upper not in valid:
-            raise ValueError(f"LOG_LEVEL '{v}' tidak valid. Pilih: {valid}")
+            raise ValueError(f"LOG_LEVEL '{v}' tidak valid. Pilih: {sorted(valid)}")
         return upper
 
     @field_validator("IMAGE_SIZE")
@@ -167,12 +163,13 @@ class Settings(BaseSettings):
     def validate_max_file_size(cls, v: int) -> int:
         if v <= 0:
             raise ValueError("MAX_FILE_SIZE_MB harus > 0.")
+        if v > 100:
+            raise ValueError("MAX_FILE_SIZE_MB tidak boleh lebih dari 100MB.")
         return v
 
     @field_validator("PBKDF2_ITERATIONS")
     @classmethod
     def validate_pbkdf2_iterations(cls, v: int) -> int:
-        # Minimal 260.000 sesuai rekomendasi NIST SP 800-132 terbaru.
         if v < 260_000:
             raise ValueError(
                 f"PBKDF2_ITERATIONS={v} terlalu rendah. "
@@ -184,10 +181,33 @@ class Settings(BaseSettings):
     @classmethod
     def validate_clip_threshold(cls, v: float) -> float:
         if not 0.0 < v < 1.0:
-            raise ValueError("CLIP_NON_DURIAN_THRESHOLD harus antara 0.0 dan 1.0 (exclusive).")
+            raise ValueError(
+                "CLIP_NON_DURIAN_THRESHOLD harus antara 0.0 dan 1.0 (exclusive)."
+            )
         return v
 
-    # ── Computed Properties ───────────────────────────────────────────────────
+    @field_validator("CLAHE_CLIP_LIMIT")
+    @classmethod
+    def validate_clahe_clip_limit(cls, v: float) -> float:
+        if v <= 0.0:
+            raise ValueError("CLAHE_CLIP_LIMIT harus > 0.")
+        return v
+
+    @field_validator("RATE_LIMIT_WINDOW_SECONDS")
+    @classmethod
+    def validate_rate_limit_window(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("RATE_LIMIT_WINDOW_SECONDS harus > 0.")
+        return v
+
+    @field_validator("BURST_LIMIT_PER_SECOND")
+    @classmethod
+    def validate_burst_limit(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("BURST_LIMIT_PER_SECOND harus > 0.")
+        return v
+
+    # ── Computed Properties ───────────────────────────────────────────────
 
     @property
     def class_names_list(self) -> List[str]:
@@ -203,7 +223,7 @@ class Settings(BaseSettings):
 
     @property
     def allowed_extensions_set(self) -> set:
-        return {e.strip().lower() for e in self.ALLOWED_EXTENSIONS.split(",")}
+        return {e.strip().lower() for e in self.ALLOWED_EXTENSIONS.split(",") if e.strip()}
 
     @property
     def max_file_size_bytes(self) -> int:
@@ -228,7 +248,8 @@ class Settings(BaseSettings):
 
     @property
     def clip_revision(self) -> Optional[str]:
-        return self.CLIP_REVISION_HASH if self.CLIP_REVISION_HASH.strip() else None
+        rev = self.CLIP_REVISION_HASH.strip()
+        return rev if rev else None
 
 
 @lru_cache()

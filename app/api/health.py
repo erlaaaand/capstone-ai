@@ -15,6 +15,7 @@ from core.security import KeyScope, get_key_manager
 from models.model_loader import get_model_loader
 from schemas.response import HealthResponse
 from agents.market_intelligence.store import get_market_store
+from agents.market_intelligence.scheduler import get_scheduler
 
 router = APIRouter()
 _startup_time = time.time()
@@ -63,10 +64,12 @@ async def health_check(
 
     rl_stats = get_rate_limiter().get_stats()
 
-    # Upgrade: status market data
-    store              = get_market_store()
-    market_available   = await store.has_data()
-    market_stale       = await store.is_stale()
+    store            = get_market_store()
+    market_available = await store.has_data()
+    market_stale     = await store.is_stale()
+
+    scheduler         = get_scheduler()
+    next_run_time     = scheduler.get_next_run_time() if scheduler.is_running else None
 
     return HealthResponse(
         status                 = "healthy" if is_loaded else "degraded",
@@ -85,6 +88,7 @@ async def health_check(
         },
         market_data_available  = market_available,
         market_data_stale      = market_stale,
+        market_next_run        = next_run_time,
     )
 
 
@@ -103,7 +107,7 @@ async def reload_api_keys(
     manager = get_key_manager()
     try:
         manager.load_keys()
-        key_count     = manager.loaded_key_count()
+        key_count      = manager.loaded_key_count()
         fresh_settings = reload_settings()
         return {
             "success":            True,

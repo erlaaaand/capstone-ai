@@ -22,20 +22,27 @@ logger = get_logger("agent.task")
 
 _run_lock = asyncio.Lock()
 
+_SEPARATOR = "═" * 60
 
 
 def _apply_python_whole_fruit_gate(
     raw_entries: List[MarketPriceEntry],
     run_id:      str,
 ) -> Tuple[List[MarketPriceEntry], int]:
+    """
+    Lapisan validasi Python ke-2 — memastikan tidak ada entry
+    dengan is_whole_fruit=False yang lolos dari LLM.
 
+    Returns:
+        (clean_entries, discarded_count)
+    """
     clean_entries:  List[MarketPriceEntry] = []
     discarded_here: int = 0
 
     for entry in raw_entries:
         if not entry.is_whole_fruit:
             logger.error(
-                f"[Task][DoubleValidation] PERINGATAN: Entry dengan is_whole_fruit=False "
+                f"[Task][DoubleValidation] PERINGATAN KRITIS: Entry dengan is_whole_fruit=False "
                 f"LOLOS dari lapisan LLM Analyzer! "
                 f"run_id={run_id} | "
                 f"variety={entry.variety_code.value} | "
@@ -51,16 +58,32 @@ def _apply_python_whole_fruit_gate(
     if discarded_here > 0:
         logger.warning(
             f"[Task][DoubleValidation] {discarded_here} entry dibuang di lapisan Python. "
-            "Periksa kualitas LLM output dan system prompt."
+            "Periksa kualitas LLM output dan system prompt!"
         )
     else:
         logger.info(
             f"[Task][DoubleValidation] Semua {len(clean_entries)} entry lolos validasi Python. "
-            "Tidak ada data leakage terdeteksi."
+            "Tidak ada data leakage terdeteksi. ✓"
         )
 
     return clean_entries, discarded_here
 
+
+def _determine_status(
+    clean_entries:   List[MarketPriceEntry],
+    sources_failed:  int,
+    llm_parse_errors: int,
+) -> AgentRunStatus:
+    """Tentukan status akhir run berdasarkan hasil pipeline."""
+    if not clean_entries:
+        if sources_failed > 0 or llm_parse_errors > 0:
+            return AgentRunStatus.NO_DATA
+        return AgentRunStatus.NO_DATA
+
+    if sources_failed > 0:
+        return AgentRunStatus.PARTIAL
+
+    return AgentRunStatus.SUCCESS
 
 
 async def _run_pipeline() -> MarketReportPayload:
@@ -68,12 +91,13 @@ async def _run_pipeline() -> MarketReportPayload:
     started_at = datetime.now(timezone.utc)
 
     logger.info(
-        f"[Task] ══════════════════════════════════════════════════════════\n"
-        f"[Task]  Market Intelligence Agent START | run_id={run_id}\n"
-        f"[Task] ══════════════════════════════════════════════════════════"
+        f"[Task] {_SEPARATOR}\n"
+        f"[Task]  Market Intelligence Agent START\n"
+        f"[Task]  run_id={run_id}\n"
+        f"[Task] {_SEPARATOR}"
     )
 
-    # ── Tahap 1: Scraping ─────────────────────────────────────────────────
+    # ── Tahap 1: Scraping ────────────────────────────────────────────────
     logger.info("[Task] ── Tahap 1/3: Network Intercept Scraping ─────────────")
     try:
         scraped_pages = await scraper.scrape_all_targets()
@@ -95,7 +119,8 @@ async def _run_pipeline() -> MarketReportPayload:
 
     if sources_scraped == 0:
         logger.error(
-            "[Task] Tidak ada satu pun halaman berhasil di-intercept."
+            f"[Task] Tidak ada satu pun halaman berhasil di-intercept. "
+            f"Total targets: {len(scraped_pages)} | Semua gagal."
         )
         return MarketReportPayload(
             agent_version   = settings.APP_VERSION,
@@ -108,10 +133,11 @@ async def _run_pipeline() -> MarketReportPayload:
         )
 
     logger.info(
-        f"[Task] Scraping selesai: {sources_scraped} berhasil | {sources_failed} gagal."
+        f"[Task] Scraping selesai: "
+        f"{sources_scraped} berhasil | {sources_failed} gagal."
     )
 
-    # ── Tahap 2: LLM Analysis (Lapisan 1 Anti-Leakage) ────────────────────
+    # ── Tahap 2: LLM Analysis (Lapisan 1 Anti-Leakage) ─────────────────
     logger.info("[Task] ── Tahap 2/3: LLM Analysis (Lapisan 1 Anti-Leakage) ──")
     try:
         raw_entries, llm_parse_errors, discarded_by_llm = await llm_analyzer.analyze_pages(
@@ -139,7 +165,7 @@ async def _run_pipeline() -> MarketReportPayload:
         f"{llm_parse_errors} parse error."
     )
 
-    # ── Tahap 3: Double Validation (Lapisan 2 Python) ─────────────────────
+    # ── Tahap 3: Double Validation (Lapisan 2 Python) ──────────────────
     logger.info("[Task] ── Tahap 3/3: Double Validation (Lapisan 2 Python) ────")
     clean_entries, discarded_by_python = _apply_python_whole_fruit_gate(
         raw_entries, run_id
@@ -148,19 +174,14 @@ async def _run_pipeline() -> MarketReportPayload:
 
     logger.info(
         f"[Task] Double Validation selesai:\n"
-        f"          Entry lolos LLM       : {len(raw_entries)}\n"
-        f"          Dibuang lapisan LLM   : {discarded_by_llm}\n"
-        f"          Dibuang lapisan Python: {discarded_by_python}\n"
-        f"          Entry FINAL valid     : {len(clean_entries)}\n"
-        f"          Total entry dibuang   : {total_discarded}"
+        f"          Entry lolos LLM        : {len(raw_entries)}\n"
+        f"          Dibuang lapisan LLM    : {discarded_by_llm}\n"
+        f"          Dibuang lapisan Python : {discarded_by_python}\n"
+        f"          Entry FINAL valid      : {len(clean_entries)}\n"
+        f"          Total entry dibuang    : {total_discarded}"
     )
 
-    if not clean_entries:
-        status = AgentRunStatus.NO_DATA
-    elif sources_failed > 0:
-        status = AgentRunStatus.PARTIAL
-    else:
-        status = AgentRunStatus.SUCCESS
+    status = _determine_status(clean_entries, sources_failed, llm_parse_errors)
 
     payload = MarketReportPayload(
         agent_version     = settings.APP_VERSION,
@@ -187,17 +208,27 @@ async def _run_pipeline() -> MarketReportPayload:
             exc_info=True,
         )
 
+    ended_at     = datetime.now(timezone.utc)
+    duration_sec = (ended_at - started_at).total_seconds()
+
     logger.info(
-        f"[Task] ══════════════════════════════════════════════════════════\n"
+        f"[Task] {_SEPARATOR}\n"
         f"[Task]  Market Intelligence Agent SELESAI\n"
-        f"[Task]  run_id={run_id} | entries={len(clean_entries)} | "
-        f"status={status.value} | discarded={total_discarded}\n"
-        f"[Task] ══════════════════════════════════════════════════════════"
+        f"[Task]  run_id={run_id} | "
+        f"entries={len(clean_entries)} | "
+        f"status={status.value} | "
+        f"discarded={total_discarded} | "
+        f"duration={duration_sec:.1f}s\n"
+        f"[Task] {_SEPARATOR}"
     )
     return payload
 
 
 async def run_once() -> Optional[MarketReportPayload]:
+    """
+    Jalankan pipeline sekali. Lock mencegah run paralel.
+    Returns None jika ada run aktif atau timeout global tercapai.
+    """
     if _run_lock.locked():
         logger.warning(
             "[Task] Run sebelumnya MASIH BERJALAN — run ini di-skip."

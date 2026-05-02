@@ -1,3 +1,5 @@
+# services/clip_service.py
+
 import base64
 import io
 import threading
@@ -5,12 +7,10 @@ from typing import Optional, Union
 
 from PIL import Image
 
+from core.config import settings
 from core.logger import get_logger
 
 logger = get_logger(__name__)
-
-_MODEL_ID             = "openai/clip-vit-base-patch32"
-_NON_DURIAN_THRESHOLD = 0.40
 
 # Kunci: prompt teks (Inggris) | Nilai: label tampil (Indonesia)
 _LABELS: dict[str, str] = {
@@ -44,14 +44,14 @@ _LABEL_NAMES:   list[str] = list(_LABELS.values())
 
 
 class CLIPService:
-    _model          = None
-    _processor      = None
-    _lock           = threading.Lock()
-    _load_attempted = False
+    _model:           object          = None
+    _processor:       object          = None
+    _lock:            threading.Lock  = threading.Lock()
+    _load_attempted:  bool            = False
 
     @classmethod
     def _ensure_loaded(cls) -> bool:
-        # Fast path — sudah dicoba load sebelumnya
+        # Fast path — sudah dicoba load sebelumnya.
         if cls._load_attempted:
             return cls._model is not None
 
@@ -60,21 +60,37 @@ class CLIPService:
                 return cls._model is not None
 
             cls._load_attempted = True
-            logger.info(f"[CLIPService] Memuat model CLIP: '{_MODEL_ID}'...")
+
+            model_id = settings.CLIP_MODEL_ID
+            revision = settings.clip_revision
+
+            logger.info(
+                f"[CLIPService] Memuat model CLIP: '{model_id}' "
+                f"(revision={revision or 'latest'})..."
+            )
 
             try:
                 from transformers import CLIPModel, CLIPProcessor
 
-                cls._model     = CLIPModel.from_pretrained(_MODEL_ID)
-                cls._processor = CLIPProcessor.from_pretrained(_MODEL_ID)
+                cls._model = CLIPModel.from_pretrained(
+                    model_id,
+                    revision=revision,
+                )
+                cls._processor = CLIPProcessor.from_pretrained(
+                    model_id,
+                    revision=revision,
+                )
                 cls._model.eval()
 
-                logger.info("[CLIPService] Model CLIP berhasil dimuat.")
+                logger.info(
+                    f"[CLIPService] Model CLIP berhasil dimuat: '{model_id}' "
+                    f"revision={revision or 'latest'}."
+                )
                 return True
 
             except Exception as exc:
                 logger.error(
-                    f"[CLIPService] Gagal memuat model CLIP: {exc}. "
+                    f"[CLIPService] Gagal memuat model CLIP '{model_id}': {exc}. "
                     "Validasi CLIP dinonaktifkan — semua gambar akan diizinkan.",
                     exc_info=True,
                 )
@@ -88,15 +104,14 @@ class CLIPService:
 
     @staticmethod
     def is_durian(raw_input: Union[bytes, str]) -> bool:
-        """
-        Kembalikan True jika gambar kemungkinan besar adalah durian.
-        Jika model tidak tersedia, izinkan semua gambar (fail-open).
-        """
+
         if not CLIPService._ensure_loaded():
             logger.warning(
                 "[CLIPService] Model tidak tersedia — gambar diizinkan tanpa validasi CLIP."
             )
             return True
+
+        non_durian_threshold = settings.CLIP_NON_DURIAN_THRESHOLD
 
         try:
             import torch
@@ -105,10 +120,10 @@ class CLIPService:
             image       = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
             inputs = CLIPService._processor(
-                text       = _LABEL_PROMPTS,
-                images     = image,
+                text           = _LABEL_PROMPTS,
+                images         = image,
                 return_tensors = "pt",
-                padding    = True,
+                padding        = True,
             )
 
             with torch.no_grad():
@@ -118,8 +133,8 @@ class CLIPService:
             best_idx   = int(probs.argmax())
             best_score = float(probs[best_idx])
 
-            # Index 0 = "Durian Asli" — jika label lain menang dengan confidence tinggi → tolak
-            if best_idx != 0 and best_score > _NON_DURIAN_THRESHOLD:
+            # Index 0 = "Durian Asli" — jika label lain menang dengan confidence tinggi → tolak.
+            if best_idx != 0 and best_score > non_durian_threshold:
                 logger.warning(
                     f"[CLIPService] Bukan durian — terdeteksi sebagai "
                     f"'{_LABEL_NAMES[best_idx]}' (confidence={best_score:.2f})"
@@ -129,6 +144,6 @@ class CLIPService:
             return True
 
         except Exception as exc:
-            # Fail-open: jika error saat inferensi, izinkan gambar lanjut ke ONNX
+            # Fail-open: jika error saat inferensi, izinkan gambar lanjut ke ONNX.
             logger.error(f"[CLIPService] Error saat inferensi: {exc}", exc_info=True)
             return True

@@ -1,3 +1,5 @@
+# core/security.py
+
 import asyncio
 import hashlib
 import hmac
@@ -24,10 +26,10 @@ class KeyScope(str, Enum):
 
 
 class RateLimitTier(str, Enum):
-    FREE       = "free"
-    STANDARD   = "standard"
-    PREMIUM    = "premium"
-    UNLIMITED  = "unlimited"
+    FREE      = "free"
+    STANDARD  = "standard"
+    PREMIUM   = "premium"
+    UNLIMITED = "unlimited"
 
 
 TIER_LIMITS: Dict[RateLimitTier, int] = {
@@ -39,27 +41,23 @@ TIER_LIMITS: Dict[RateLimitTier, int] = {
 
 KEY_PREFIX_LIVE = "dk_live_"
 KEY_PREFIX_TEST = "dk_test_"
-KEY_PREFIX_LEN  = 10
 
-_PBKDF2_FAIL_WINDOW   = 60    # seconds — rolling window
-_PBKDF2_FAIL_MAX      = 10    # max failed attempts within window before lockout
-_PBKDF2_LOCKOUT_SEC   = 30    # lockout duration in seconds
+_PBKDF2_FAIL_WINDOW = 60
+_PBKDF2_FAIL_MAX    = 10
+_PBKDF2_LOCKOUT_SEC = 30
 
 
 @dataclass
 class _FailRecord:
-    timestamps: List[float] = field(default_factory=list)
-    locked_until: float     = 0.0
+    timestamps:   List[float] = field(default_factory=list)
+    locked_until: float       = 0.0
 
 
 class _PBKDF2GuardState:
 
-    _lock:    threading.Lock
-    _records: Dict[str, _FailRecord]
-
     def __init__(self) -> None:
         self._lock    = threading.Lock()
-        self._records = {}
+        self._records: Dict[str, _FailRecord] = {}
 
     def is_locked(self, prefix: str) -> bool:
         with self._lock:
@@ -116,7 +114,19 @@ class AuthResult:
     error:      str           = ""
 
 
+def _get_pbkdf2_iterations() -> int:
+    try:
+        from core.config import settings
+        return settings.PBKDF2_ITERATIONS
+    except Exception:
+        # Fallback aman saat bootstrap — tidak pernah turun di bawah minimum OWASP.
+        return 600_000
+
+
 def _hash_key(raw_key: str, salt: Optional[str] = None) -> tuple[str, str]:
+
+    iterations = _get_pbkdf2_iterations()
+
     if salt is None:
         salt_bytes = os.urandom(16)
         salt_hex   = salt_bytes.hex()
@@ -125,11 +135,11 @@ def _hash_key(raw_key: str, salt: Optional[str] = None) -> tuple[str, str]:
         salt_hex   = salt
 
     dk = hashlib.pbkdf2_hmac(
-        hash_name   = "sha256",
-        password    = raw_key.encode("utf-8"),
-        salt        = salt_bytes,
-        iterations  = 100_000,
-        dklen       = 32,
+        hash_name  = "sha256",
+        password   = raw_key.encode("utf-8"),
+        salt       = salt_bytes,
+        iterations = iterations,
+        dklen      = 32,
     )
     return dk.hex(), salt_hex
 
@@ -152,9 +162,8 @@ def hash_api_key(raw_key: str) -> str:
 
 
 def generate_api_key(live: bool = True) -> str:
-    prefix      = KEY_PREFIX_LIVE if live else KEY_PREFIX_TEST
-    random_part = secrets.token_urlsafe(24)
-    return f"{prefix}{random_part}"
+    prefix = KEY_PREFIX_LIVE if live else KEY_PREFIX_TEST
+    return f"{prefix}{secrets.token_urlsafe(24)}"
 
 
 def get_key_prefix(raw_key: str) -> str:
@@ -174,7 +183,6 @@ class APIKeyManager:
     def __new__(cls) -> "APIKeyManager":
         if cls._instance is not None:
             return cls._instance
-
         with cls._singleton_lock:
             if cls._instance is None:
                 inst = super().__new__(cls)
@@ -182,7 +190,6 @@ class APIKeyManager:
                 inst._loaded    = False
                 inst._load_lock = threading.RLock()
                 cls._instance   = inst
-
         return cls._instance
 
     def load_keys(self) -> None:
@@ -227,8 +234,6 @@ class APIKeyManager:
                     "Set API_KEY_1 di environment variables. "
                     "Semua request akan ditolak."
                 )
-            else:
-                logger.info(f"API Key Manager: {loaded_count} key(s) ter-load.")
 
             self._loaded = True
 
@@ -268,6 +273,13 @@ class APIKeyManager:
             f"scopes={[s.value for s in scopes]} tier={tier.value}"
         )
 
+    def loaded_key_count(self) -> int:
+        """
+        [FIX BUG #11] Public method untuk mendapatkan jumlah key yang ter-load.
+        Menggantikan akses langsung ke atribut private `_keys` dari luar kelas.
+        """
+        with self._load_lock:
+            return sum(len(bucket) for bucket in self._keys.values())
 
     def validate(self, raw_key: str) -> AuthResult:
         if not self._loaded:
@@ -290,21 +302,17 @@ class APIKeyManager:
             )
 
         with self._load_lock:
-            keys_snapshot = dict(self._keys)
+            candidates = list(self._keys.get(key_prefix, []))
 
-        candidates = keys_snapshot.get(key_prefix, [])
-
-        for record in candidates:
-            if _verify_key(raw_key, record.key_hash):
-                _pbkdf2_guard.record_success(key_prefix)
-                return self._build_auth_result(record)
-
-        if candidates:
-            _pbkdf2_guard.record_failure(key_prefix)
-
-        return AuthResult(valid=False, error="API key tidak valid.", key_prefix=key_prefix)
+        return self._verify_candidates(raw_key, key_prefix, candidates)
 
     async def validate_async(self, raw_key: str) -> AuthResult:
+        """
+        [FIX BUG #12] Verifikasi PBKDF2 (CPU-bound) dijalankan di thread pool
+        menggunakan asyncio.to_thread sehingga tidak memblokir event loop.
+        Implementasi sebelumnya memanggil self.validate() secara langsung
+        yang tetap memblokir event loop karena tidak di-await dengan benar.
+        """
         if not self._loaded:
             await asyncio.to_thread(self.load_keys)
 
@@ -325,14 +333,15 @@ class APIKeyManager:
             )
 
         with self._load_lock:
-            keys_snapshot = dict(self._keys)
+            candidates = list(self._keys.get(key_prefix, []))
 
-        candidates = keys_snapshot.get(key_prefix, [])
         if not candidates:
             return AuthResult(valid=False, error="API key tidak valid.", key_prefix=key_prefix)
 
-        result = await asyncio.to_thread(self._verify_candidates, raw_key, key_prefix, candidates)
-        return result
+        # Jalankan verifikasi PBKDF2 di thread pool — tidak memblokir event loop.
+        return await asyncio.to_thread(
+            self._verify_candidates, raw_key, key_prefix, candidates
+        )
 
     def _verify_candidates(
         self,

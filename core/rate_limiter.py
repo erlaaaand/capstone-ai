@@ -1,3 +1,5 @@
+# core/rate_limiter.py
+
 import asyncio
 import time
 from collections import deque
@@ -8,10 +10,27 @@ from core.logger import get_logger
 
 logger = get_logger(__name__)
 
-WINDOW_SECONDS            = 60
-BURST_LIMIT               = 20
+_DEFAULT_WINDOW_SECONDS   = 60
+_DEFAULT_BURST_LIMIT      = 20
 CLEANUP_INTERVAL_SECONDS  = 300
 STALE_THRESHOLD_SECONDS   = 600
+
+
+def _get_window_seconds() -> int:
+    try:
+        from core.config import settings
+        return settings.RATE_LIMIT_WINDOW_SECONDS
+    except Exception:
+        return _DEFAULT_WINDOW_SECONDS
+
+
+def _get_burst_limit() -> int:
+    try:
+        from core.config import settings
+        return settings.BURST_LIMIT_PER_SECOND
+    except Exception:
+        return _DEFAULT_BURST_LIMIT
+
 
 @dataclass
 class RateLimitState:
@@ -31,14 +50,14 @@ class RateLimitResult:
 
 
 class SlidingWindowRateLimiter:
+
     def __init__(self) -> None:
-        self._states:        Dict[str, RateLimitState] = {}
-        self._lock:          asyncio.Lock               = asyncio.Lock()
-        self._last_cleanup:  float                      = time.time()
-        self._cleanup_task:  Optional[asyncio.Task]     = None
+        self._states:       Dict[str, RateLimitState] = {}
+        self._lock:         asyncio.Lock               = asyncio.Lock()
+        self._last_cleanup: float                      = time.time()
+        self._cleanup_task: Optional[asyncio.Task]     = None
 
     async def start_cleanup_task(self) -> None:
-
         if self._cleanup_task is not None and not self._cleanup_task.done():
             logger.debug("Cleanup task sudah berjalan, skip.")
             return
@@ -54,7 +73,6 @@ class SlidingWindowRateLimiter:
         )
 
     async def stop_cleanup_task(self) -> None:
-
         if self._cleanup_task is None or self._cleanup_task.done():
             return
 
@@ -74,15 +92,19 @@ class SlidingWindowRateLimiter:
                 break
             except Exception as e:
                 logger.error(f"[RateLimiter] Error di cleanup loop: {e}", exc_info=True)
-                
                 await asyncio.sleep(10)
 
     async def check(
         self,
         identifier:  str,
         limit:       int,
-        burst_limit: int = BURST_LIMIT,
+        burst_limit: Optional[int] = None,
     ) -> RateLimitResult:
+        # [FIX BUG #7] Baca dari Settings agar bisa dikonfigurasi via .env.
+        if burst_limit is None:
+            burst_limit = _get_burst_limit()
+        window_seconds = _get_window_seconds()
+
         async with self._lock:
             now   = time.time()
             state = self._states.get(identifier)
@@ -93,7 +115,7 @@ class SlidingWindowRateLimiter:
 
             state.last_seen = now
 
-            window_start = now - WINDOW_SECONDS
+            window_start = now - window_seconds
             while state.requests and state.requests[0] < window_start:
                 state.requests.popleft()
 
@@ -115,7 +137,7 @@ class SlidingWindowRateLimiter:
             current_count = len(state.requests)
             if current_count >= limit:
                 oldest      = state.requests[0]
-                reset_at    = oldest + WINDOW_SECONDS
+                reset_at    = oldest + window_seconds
                 retry_after = max(reset_at - now, 0.1)
                 return RateLimitResult(
                     allowed     = False,
@@ -129,7 +151,7 @@ class SlidingWindowRateLimiter:
             state.requests.append(now)
             state.burst_requests.append(now)
 
-            reset_at  = (state.requests[0] + WINDOW_SECONDS) if state.requests else (now + WINDOW_SECONDS)
+            reset_at  = (state.requests[0] + window_seconds) if state.requests else (now + window_seconds)
             remaining = max(limit - len(state.requests), 0)
 
             if (
@@ -145,14 +167,12 @@ class SlidingWindowRateLimiter:
             )
 
     async def _cleanup_safe(self, now: float) -> None:
-
         try:
             await self._cleanup(now)
         except Exception as e:
             logger.error(f"[RateLimiter] Error saat cleanup: {e}", exc_info=True)
 
     async def _cleanup(self, now: float) -> None:
-
         async with self._lock:
             cutoff     = now - STALE_THRESHOLD_SECONDS
             stale_keys = [
@@ -195,11 +215,12 @@ def get_rate_limiter() -> SlidingWindowRateLimiter:
 
 
 def build_rate_limit_headers(result: RateLimitResult) -> Dict[str, str]:
+    window_seconds = _get_window_seconds()
     headers = {
         "X-RateLimit-Limit":     str(result.limit),
         "X-RateLimit-Remaining": str(result.remaining),
         "X-RateLimit-Reset":     str(int(result.reset_at)),
-        "X-RateLimit-Policy":    f"{result.limit};w={WINDOW_SECONDS}",
+        "X-RateLimit-Policy":    f"{result.limit};w={window_seconds}",
     }
     if not result.allowed:
         headers["Retry-After"] = str(int(result.retry_after) + 1)

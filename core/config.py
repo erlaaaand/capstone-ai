@@ -1,3 +1,5 @@
+# core/config.py
+
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Tuple
@@ -89,26 +91,18 @@ class Settings(BaseSettings):
         extra             = "ignore",
     )
 
+    # ── Application ──────────────────────────────────────────────────────────
     APP_NAME:    str  = "Durian Classification API"
     APP_VERSION: str  = "1.0.0"
     DEBUG:       bool = False
     LOG_LEVEL:   str  = "INFO"
 
-    # [FIX BUG-09] MODEL_PATH default diperbarui ke model v10 (EfficientNetV2-S).
-    # Default ini sebagai fallback jika .env tidak menyetel MODEL_PATH.
-    # Nilai aktual selalu dibaca dari .env — pastikan .env sudah diperbarui.
-    MODEL_PATH: str = "models/weights/efficientnet_b0.onnx"
+    # ── Model ─────────────────────────────────────────────────────────────────
+    MODEL_PATH:  str  = "models/weights/efficientnet_b0.onnx"
+    CLASS_NAMES: str  = "D13,D197,D2,D200,D24"
+    IMAGE_SIZE:  int  = 224
 
-    # CLASS_NAMES: urutan WAJIB alphabetical sesuai folder training (indeks 0–4).
-    # D101 sudah dihapus — tidak ada dalam training data model v10.
-    CLASS_NAMES: str = "D13,D197,D2,D200,D24"
-
-    # [FIX BUG-08] IMAGE_SIZE default diubah 640 → 480.
-    # Model v10 (EfficientNetV2-S) menggunakan input tensor 480×480.
-    # Default 640 sebelumnya tidak sinkron dengan .env.example dan akan
-    # menyebabkan ONNX shape mismatch error jika .env tidak diset eksplisit.
-    IMAGE_SIZE: int = 480
-
+    # ── Image Processing ──────────────────────────────────────────────────────
     ENABLE_ENHANCEMENT:   bool  = True
     ENABLE_CLAHE:         bool  = True
     ENABLE_SHARPENING:    bool  = True
@@ -118,12 +112,33 @@ class Settings(BaseSettings):
     ALLOWED_EXTENSIONS: str = "jpg,jpeg,png,webp"
     MAX_FILE_SIZE_MB:   int = 10
 
+    # ── CLIP / Zero-Shot Validation ───────────────────────────────────────────
+    # [FIX BUG #4 & #5] Model ID dan revision hash dibaca dari .env,
+    # menghapus hardcode di services/clip_service.py.
+    CLIP_MODEL_ID:             str   = "openai/clip-vit-base-patch32"
+    CLIP_REVISION_HASH:        str   = ""   # Pin ke commit hash untuk keamanan supply chain
+    CLIP_NON_DURIAN_THRESHOLD: float = 0.40
+
+    # ── Security ──────────────────────────────────────────────────────────────
+    # [FIX BUG #2] PBKDF2 iterations dikontrol via .env.
+    # OWASP 2023 merekomendasikan >= 600.000 untuk PBKDF2-HMAC-SHA256.
+    PBKDF2_ITERATIONS: int = 600_000
+
+    # [FIX BUG #7] Rate limit parameters dikontrol via .env.
+    RATE_LIMIT_WINDOW_SECONDS: int = 60
+    BURST_LIMIT_PER_SECOND:    int = 20
+
+    # [FIX BUG #8] OpenAPI contact info dikontrol via .env.
+    API_SUPPORT_EMAIL: str = "api-support@yourdomain.com"
+    API_SUPPORT_NAME:  str = "Durian API Support"
+
+    # ── Network ───────────────────────────────────────────────────────────────
     CORS_ORIGINS_STR:  str = "http://localhost:3000,http://localhost:8080"
     ALLOWED_HOSTS_STR: str = "*"
 
     API_KEY_REQUIRED: bool = True
 
-    # --- Validators ---
+    # ── Validators ────────────────────────────────────────────────────────────
 
     @field_validator("LOG_LEVEL")
     @classmethod
@@ -137,13 +152,8 @@ class Settings(BaseSettings):
     @field_validator("IMAGE_SIZE")
     @classmethod
     def validate_image_size(cls, v: int) -> int:
-        # [FIX BUG-08] Validator tetap 32–1024 untuk fleksibilitas.
-        # Nilai yang valid untuk production: 224 (model v0), 480 (model v10).
         if not 32 <= v <= 1024:
-            raise ValueError(
-                f"IMAGE_SIZE={v} tidak valid. Harus antara 32–1024. "
-                "Untuk model v10 gunakan IMAGE_SIZE=480."
-            )
+            raise ValueError(f"IMAGE_SIZE={v} tidak valid. Harus antara 32–1024.")
         return v
 
     @field_validator("MAX_FILE_SIZE_MB")
@@ -153,7 +163,25 @@ class Settings(BaseSettings):
             raise ValueError("MAX_FILE_SIZE_MB harus > 0.")
         return v
 
-    # --- Computed properties ---
+    @field_validator("PBKDF2_ITERATIONS")
+    @classmethod
+    def validate_pbkdf2_iterations(cls, v: int) -> int:
+        # Minimal 260.000 sesuai rekomendasi NIST SP 800-132 terbaru.
+        if v < 260_000:
+            raise ValueError(
+                f"PBKDF2_ITERATIONS={v} terlalu rendah. "
+                "Minimum 260.000 (rekomendasi OWASP 2023: 600.000)."
+            )
+        return v
+
+    @field_validator("CLIP_NON_DURIAN_THRESHOLD")
+    @classmethod
+    def validate_clip_threshold(cls, v: float) -> float:
+        if not 0.0 < v < 1.0:
+            raise ValueError("CLIP_NON_DURIAN_THRESHOLD harus antara 0.0 dan 1.0 (exclusive).")
+        return v
+
+    # ── Computed Properties ───────────────────────────────────────────────────
 
     @property
     def class_names_list(self) -> List[str]:
@@ -191,6 +219,11 @@ class Settings(BaseSettings):
     @property
     def variety_map(self) -> Dict[str, VarietyInfo]:
         return VARIETY_MAP
+
+    @property
+    def clip_revision(self) -> Optional[str]:
+        """None jika kosong agar Hugging Face mengambil latest; set untuk pin."""
+        return self.CLIP_REVISION_HASH if self.CLIP_REVISION_HASH.strip() else None
 
 
 @lru_cache()

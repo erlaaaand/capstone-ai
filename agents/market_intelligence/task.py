@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
+from core.config import settings
 from core.logger import get_logger
 from agents.market_intelligence.config import SCHEDULER_CONFIG
 from agents.market_intelligence.schemas import (
@@ -14,18 +15,21 @@ from agents.market_intelligence.schemas import (
     MarketPriceEntry,
     MarketReportPayload,
 )
-from agents.market_intelligence import scraper, llm_analyzer, nestjs_client
+from agents.market_intelligence.store import get_market_store
+from agents.market_intelligence import scraper, llm_analyzer
 
 logger = get_logger("agent.task")
 
 _run_lock = asyncio.Lock()
 
+
+
 def _apply_python_whole_fruit_gate(
     raw_entries: List[MarketPriceEntry],
     run_id:      str,
 ) -> Tuple[List[MarketPriceEntry], int]:
-   
-    clean_entries: List[MarketPriceEntry] = []
+
+    clean_entries:  List[MarketPriceEntry] = []
     discarded_here: int = 0
 
     for entry in raw_entries:
@@ -38,11 +42,10 @@ def _apply_python_whole_fruit_gate(
                 f"alias='{entry.variety_alias}' | "
                 f"weight_ref='{entry.weight_reference}' | "
                 f"notes='{entry.notes}'. "
-                f"Entry DIBUANG di lapisan Python. [DATA LEAKAGE PREVENTED - PYTHON LAYER]"
+                "Entry DIBUANG di lapisan Python. [DATA LEAKAGE PREVENTED - PYTHON LAYER]"
             )
             discarded_here += 1
             continue
-
         clean_entries.append(entry)
 
     if discarded_here > 0:
@@ -53,13 +56,14 @@ def _apply_python_whole_fruit_gate(
     else:
         logger.info(
             f"[Task][DoubleValidation] Semua {len(clean_entries)} entry lolos validasi Python. "
-            "Tidak ada data leakage terdeteksi di lapisan ini."
+            "Tidak ada data leakage terdeteksi."
         )
 
     return clean_entries, discarded_here
 
-async def _run_pipeline() -> MarketReportPayload:
 
+
+async def _run_pipeline() -> MarketReportPayload:
     run_id     = str(uuid.uuid4())
     started_at = datetime.now(timezone.utc)
 
@@ -69,7 +73,8 @@ async def _run_pipeline() -> MarketReportPayload:
         f"[Task] ══════════════════════════════════════════════════════════"
     )
 
-    logger.info("[Task] ── Tahap 1/4: Network Intercept Scraping ─────────────")
+    # ── Tahap 1: Scraping ─────────────────────────────────────────────────
+    logger.info("[Task] ── Tahap 1/3: Network Intercept Scraping ─────────────")
     try:
         scraped_pages = await scraper.scrape_all_targets()
     except Exception as exc:
@@ -78,6 +83,7 @@ async def _run_pipeline() -> MarketReportPayload:
             exc_info=True,
         )
         return MarketReportPayload(
+            agent_version  = settings.APP_VERSION,
             run_id         = run_id,
             run_started_at = started_at,
             status         = AgentRunStatus.SCRAPER_ERROR,
@@ -89,10 +95,10 @@ async def _run_pipeline() -> MarketReportPayload:
 
     if sources_scraped == 0:
         logger.error(
-            "[Task] Tidak ada satu pun halaman berhasil di-intercept. "
-            "Periksa api_url_pattern di config.py dan koneksi internet."
+            "[Task] Tidak ada satu pun halaman berhasil di-intercept."
         )
         return MarketReportPayload(
+            agent_version   = settings.APP_VERSION,
             run_id          = run_id,
             run_started_at  = started_at,
             status          = AgentRunStatus.SCRAPER_ERROR,
@@ -102,11 +108,11 @@ async def _run_pipeline() -> MarketReportPayload:
         )
 
     logger.info(
-        f"[Task] Scraping selesai: "
-        f"{sources_scraped} berhasil | {sources_failed} gagal."
+        f"[Task] Scraping selesai: {sources_scraped} berhasil | {sources_failed} gagal."
     )
 
-    logger.info("[Task] ── Tahap 2/4: LLM Analysis (Lapisan 1 Anti-Leakage) ──")
+    # ── Tahap 2: LLM Analysis (Lapisan 1 Anti-Leakage) ────────────────────
+    logger.info("[Task] ── Tahap 2/3: LLM Analysis (Lapisan 1 Anti-Leakage) ──")
     try:
         raw_entries, llm_parse_errors, discarded_by_llm = await llm_analyzer.analyze_pages(
             scraped_pages
@@ -117,6 +123,7 @@ async def _run_pipeline() -> MarketReportPayload:
             exc_info=True,
         )
         return MarketReportPayload(
+            agent_version    = settings.APP_VERSION,
             run_id           = run_id,
             run_started_at   = started_at,
             status           = AgentRunStatus.LLM_ERROR,
@@ -132,28 +139,23 @@ async def _run_pipeline() -> MarketReportPayload:
         f"{llm_parse_errors} parse error."
     )
 
-    logger.info("[Task] ── Tahap 3/4: Double Validation (Lapisan 2 Python) ────")
-
+    # ── Tahap 3: Double Validation (Lapisan 2 Python) ─────────────────────
+    logger.info("[Task] ── Tahap 3/3: Double Validation (Lapisan 2 Python) ────")
     clean_entries, discarded_by_python = _apply_python_whole_fruit_gate(
         raw_entries, run_id
     )
-
     total_discarded = discarded_by_llm + discarded_by_python
 
     logger.info(
         f"[Task] Double Validation selesai:\n"
-        f"          Entry lolos LLM      : {len(raw_entries)}\n"
-        f"          Dibuang lapisan LLM  : {discarded_by_llm}\n"
+        f"          Entry lolos LLM       : {len(raw_entries)}\n"
+        f"          Dibuang lapisan LLM   : {discarded_by_llm}\n"
         f"          Dibuang lapisan Python: {discarded_by_python}\n"
-        f"          Entry FINAL valid    : {len(clean_entries)}\n"
-        f"          Total entry dibuang : {total_discarded} (pencegahan data leakage)"
+        f"          Entry FINAL valid     : {len(clean_entries)}\n"
+        f"          Total entry dibuang   : {total_discarded}"
     )
 
     if not clean_entries:
-        logger.warning(
-            "[Task] Tidak ada entry harga valid setelah double validation. "
-            "Kemungkinan semua produk yang ditemukan adalah varian kupas/frozen/olahan."
-        )
         status = AgentRunStatus.NO_DATA
     elif sources_failed > 0:
         status = AgentRunStatus.PARTIAL
@@ -161,6 +163,7 @@ async def _run_pipeline() -> MarketReportPayload:
         status = AgentRunStatus.SUCCESS
 
     payload = MarketReportPayload(
+        agent_version     = settings.APP_VERSION,
         run_id            = run_id,
         run_started_at    = started_at,
         status            = status,
@@ -171,17 +174,16 @@ async def _run_pipeline() -> MarketReportPayload:
         entries_discarded = total_discarded,
     )
 
-    logger.info("[Task] ── Tahap 4/4: Pengiriman ke NestJS Backend ────────────")
     try:
-        send_ok = await nestjs_client.send_report(payload)
-        if not send_ok:
-            logger.error(
-                "[Task] Gagal mengirim laporan ke NestJS (semua retry habis). "
-                "Data tersimpan di log untuk recovery manual."
-            )
+        await get_market_store().save(payload)
+        logger.info(
+            f"[Task] Payload disimpan ke MarketDataStore. "
+            f"Tersedia di GET /api/v1/market/prices dan /api/v1/market/report."
+        )
     except Exception as exc:
         logger.error(
-            f"[Task] NestJS client melempar exception tidak tertangani: {exc}",
+            f"[Task] Gagal menyimpan payload ke store: {exc}. "
+            "Data masih tersedia di log.",
             exc_info=True,
         )
 
@@ -196,12 +198,9 @@ async def _run_pipeline() -> MarketReportPayload:
 
 
 async def run_once() -> Optional[MarketReportPayload]:
-
     if _run_lock.locked():
         logger.warning(
-            "[Task] Run sebelumnya MASIH BERJALAN — run ini di-skip. "
-            "Jika ini sering terjadi, pertimbangkan mengurangi jumlah target "
-            "atau menambah interval scheduler."
+            "[Task] Run sebelumnya MASIH BERJALAN — run ini di-skip."
         )
         return None
 
@@ -218,8 +217,7 @@ async def run_once() -> Optional[MarketReportPayload]:
         except asyncio.TimeoutError:
             logger.error(
                 f"[Task] Run dibatalkan paksa — melebihi global timeout "
-                f"({SCHEDULER_CONFIG.max_run_duration_sec}s). "
-                "Pertimbangkan mengurangi jumlah target atau menaikkan timeout."
+                f"({SCHEDULER_CONFIG.max_run_duration_sec}s)."
             )
             return None
         except Exception as exc:

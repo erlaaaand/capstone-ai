@@ -11,14 +11,14 @@ from typing import Dict, List, Optional
 
 from core.logger import get_logger
 from agents.market_intelligence.config import (
-    CIRCUIT_BREAKER_COOLDOWN_SEC,
-    CIRCUIT_BREAKER_THRESHOLD,
+    CIRCUIT_BREAKER_CONFIG,
     ScrapingTarget,
     SCRAPING_TARGETS,
 )
 from agents.market_intelligence.schemas import ScrapedPage
 
 logger = get_logger("agent.scraper")
+
 
 class _CircuitBreakerState:
     """Menyimpan state circuit breaker untuk semua target (in-process)."""
@@ -28,24 +28,23 @@ class _CircuitBreakerState:
         self._tripped_at: Dict[str, float] = {}
 
     def is_open(self, target_name: str) -> bool:
-        """True jika circuit OPEN (target sedang diblokir sementara)."""
         tripped = self._tripped_at.get(target_name)
         if tripped is None:
             return False
-        if time.time() - tripped < CIRCUIT_BREAKER_COOLDOWN_SEC:
+        if time.time() - tripped < CIRCUIT_BREAKER_CONFIG.cooldown_sec:
             return True
         self.reset(target_name)
         return False
 
     def record_failure(self, target_name: str) -> None:
         self._failures[target_name] = self._failures.get(target_name, 0) + 1
-        if self._failures[target_name] >= CIRCUIT_BREAKER_THRESHOLD:
+        if self._failures[target_name] >= CIRCUIT_BREAKER_CONFIG.threshold:
             if target_name not in self._tripped_at:
                 self._tripped_at[target_name] = time.time()
                 logger.warning(
                     f"[CircuitBreaker] OPEN untuk '{target_name}' "
                     f"setelah {self._failures[target_name]} kegagalan berturut-turut. "
-                    f"Cooldown {CIRCUIT_BREAKER_COOLDOWN_SEC}s."
+                    f"Cooldown {CIRCUIT_BREAKER_CONFIG.cooldown_sec}s."
                 )
 
     def record_success(self, target_name: str) -> None:
@@ -60,12 +59,11 @@ class _CircuitBreakerState:
 
 _circuit_breaker = _CircuitBreakerState()
 
-def _url_matches_pattern(url: str, pattern: str) -> bool:
 
+def _url_matches_pattern(url: str, pattern: str) -> bool:
     escaped = re.escape(pattern)
     escaped = escaped.replace(r"\*\*", ".+")
     escaped = escaped.replace(r"\*", "[^/]+")
-
     try:
         return bool(re.search(escaped, url, re.IGNORECASE))
     except re.error:
@@ -109,6 +107,7 @@ def _scrape_single_target_sync(target: ScrapingTarget) -> ScrapedPage:
                 )
                 page = context.new_page()
 
+                # Block static assets & tracking
                 page.route(
                     "**/*.{png,jpg,jpeg,gif,svg,webp,ico,woff,woff2,ttf,otf}",
                     lambda route: route.abort(),
@@ -119,12 +118,10 @@ def _scrape_single_target_sync(target: ScrapingTarget) -> ScrapedPage:
                 )
 
                 def _response_handler(response) -> None:
-
                     if len(collected_jsons) >= target.max_responses:
                         return
 
                     resp_url = response.url
-
                     if not _url_matches_pattern(resp_url, target.api_url_pattern):
                         return
 
@@ -155,8 +152,7 @@ def _scrape_single_target_sync(target: ScrapingTarget) -> ScrapedPage:
                             return
 
                         body_str = body_bytes.decode("utf-8", errors="replace")
-
-                        json.loads(body_str)
+                        json.loads(body_str)  # Validate JSON sebelum disimpan
 
                         collected_jsons.append(body_str)
                         logger.info(
@@ -172,12 +168,10 @@ def _scrape_single_target_sync(target: ScrapingTarget) -> ScrapedPage:
                         )
                     except Exception as exc:
                         logger.debug(
-                            f"[Scraper] Gagal baca body response "
-                            f"({resp_url[:80]}): {exc}"
+                            f"[Scraper] Gagal baca body response ({resp_url[:80]}): {exc}"
                         )
 
                 page.on("response", _response_handler)
-
                 page.goto(
                     target.url,
                     wait_until=target.wait_until,
@@ -196,8 +190,7 @@ def _scrape_single_target_sync(target: ScrapingTarget) -> ScrapedPage:
             if not collected_jsons:
                 raise ValueError(
                     f"Tidak ada JSON response yang di-intercept. "
-                    f"Pola '{target.api_url_pattern}' mungkin tidak cocok "
-                    f"dengan endpoint e-commerce saat ini."
+                    f"Pola '{target.api_url_pattern}' mungkin tidak cocok."
                 )
 
             raw_json = _merge_json_responses(collected_jsons, target.name)
@@ -255,7 +248,6 @@ def _scrape_single_target_sync(target: ScrapingTarget) -> ScrapedPage:
 
 
 def _merge_json_responses(responses: List[str], source_name: str) -> str:
-    
     if len(responses) == 1:
         return responses[0]
 
@@ -271,18 +263,18 @@ def _merge_json_responses(responses: List[str], source_name: str) -> str:
             )
 
     if not merged_parts:
-        return responses[0]  # Fallback ke raw pertama
+        return responses[0]
 
     merged = json.dumps(
         {"intercepted_responses": merged_parts},
         ensure_ascii=False,
     )
-
     logger.debug(
         f"[Scraper] Merged {len(merged_parts)} JSON responses dari "
         f"'{source_name}': {len(merged)} chars total."
     )
     return merged
+
 
 async def scrape_all_targets(
     targets: Optional[List[ScrapingTarget]] = None,
@@ -294,11 +286,9 @@ async def scrape_all_targets(
     results: List[ScrapedPage] = []
 
     for target in targets:
-        
         if _circuit_breaker.is_open(target.name):
             logger.warning(
-                f"[Scraper] SKIP '{target.name}' — circuit breaker OPEN. "
-                "Target dinonaktifkan sementara karena terlalu banyak kegagalan."
+                f"[Scraper] SKIP '{target.name}' — circuit breaker OPEN."
             )
             results.append(ScrapedPage(
                 source_name=target.name,
@@ -319,7 +309,6 @@ async def scrape_all_targets(
             _circuit_breaker.record_failure(target.name)
 
         results.append(page_result)
-
         await asyncio.sleep(3.0)
 
     succeeded = sum(1 for r in results if r.success)

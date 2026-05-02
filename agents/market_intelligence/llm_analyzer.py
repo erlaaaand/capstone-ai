@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import List, Optional, Tuple
@@ -75,7 +76,7 @@ CONTOH B — Harga sudah per-kg:
   Output:
     price_per_kg_avg: 550000
     weight_reference: "per kg"
-    notes: null  ← null karena tidak ada konversi yang perlu dijelaskan
+    notes: null
 
 CONTOH C — Range harga:
   Input JSON: {"name": "Durian Golden Bun Whole", "price_min": 300000, "price_max": 400000,
@@ -140,13 +141,12 @@ Jika tidak bisa diperbaiki atau tidak ada data valid, kembalikan: []
 Output sebelumnya (untuk referensi perbaikan):
 {previous_output}"""
 
-
 async def _call_ollama(messages: List[dict], config: OllamaConfig) -> str:
     payload = {
-        "model":   config.model,
+        "model":    config.model,
         "messages": messages,
-        "stream":  False,
-        "options": {
+        "stream":   False,
+        "options":  {
             "temperature": config.temperature,
             "top_p":       config.top_p,
             "num_predict": 4096,
@@ -161,6 +161,7 @@ async def _call_ollama(messages: List[dict], config: OllamaConfig) -> str:
     if not content:
         raise ValueError(f"Ollama mengembalikan respons kosong. Raw: {data}")
     return content
+
 
 def _extract_json_array(text: str) -> Optional[list]:
     cleaned = re.sub(r"```(?:json)?\s*", "", text).strip()
@@ -190,19 +191,19 @@ def _extract_json_array(text: str) -> Optional[list]:
 
     return None
 
-
 def _validate_and_filter_entries(
     raw_list:    list,
     source_name: str,
 ) -> Tuple[List[MarketPriceEntry], int, int]:
-    valid_entries: List[MarketPriceEntry] = []
+    valid_entries:  List[MarketPriceEntry] = []
     pydantic_errors: int = 0
     non_whole_count: int = 0
 
     for i, item in enumerate(raw_list):
         if not isinstance(item, dict):
             logger.warning(
-                f"[LLM] Entry #{i} dari '{source_name}' bukan dict (type={type(item).__name__}), skip."
+                f"[LLM] Entry #{i} dari '{source_name}' bukan dict "
+                f"(type={type(item).__name__}), skip."
             )
             pydantic_errors += 1
             continue
@@ -213,8 +214,8 @@ def _validate_and_filter_entries(
             if not entry.is_whole_fruit:
                 logger.warning(
                     f"[LLM] Entry #{i} '{source_name}' ditandai is_whole_fruit=False "
-                    f"oleh LLM (alias='{entry.variety_alias}'). "
-                    "Entry DIBUANG di layer analyzer. [DATA LEAKAGE PREVENTED - LLM LAYER]"
+                    f"(alias='{entry.variety_alias}'). "
+                    "Entry DIBUANG. [DATA LEAKAGE PREVENTED - LLM LAYER]"
                 )
                 non_whole_count += 1
                 continue
@@ -224,7 +225,7 @@ def _validate_and_filter_entries(
         except Exception as exc:
             logger.warning(
                 f"[LLM] Entry #{i} dari '{source_name}' gagal validasi Pydantic: {exc}. "
-                f"Data preview: {str(item)[:200]}"
+                f"Preview: {str(item)[:200]}"
             )
             pydantic_errors += 1
 
@@ -254,14 +255,14 @@ async def analyze_page(
         {
             "role": "user",
             "content": _USER_PROMPT_TEMPLATE.format(
-                source_name = page.source_name,
-                source_url  = page.source_url,
-                raw_json    = raw_json,
+                source_name=page.source_name,
+                source_url=page.source_url,
+                raw_json=raw_json,
             ),
         },
     ]
 
-    parse_errors  = 0
+    parse_errors    = 0
     total_discarded = 0
 
     for attempt in range(1, config.max_parse_retries + 2):
@@ -311,7 +312,7 @@ async def analyze_page(
 
             logger.info(
                 f"[LLM] '{page.source_name}': "
-                f"{len(entries)} entry valid & whole | "
+                f"{len(entries)} entry valid | "
                 f"{discarded} entry buang (non-whole) | "
                 f"{val_errors} error validasi schema."
             )
@@ -349,20 +350,34 @@ async def analyze_pages(
     config: Optional[OllamaConfig] = None,
 ) -> Tuple[List[MarketPriceEntry], int, int]:
 
-    all_entries:      List[MarketPriceEntry] = []
-    total_errors:     int = 0
-    total_discarded:  int = 0
+    if not pages:
+        return [], 0, 0
 
-    for page in pages:
-        entries, errors, discarded = await analyze_page(page, config)
+    tasks = [analyze_page(page, config) for page in pages]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    all_entries:     List[MarketPriceEntry] = []
+    total_errors:    int = 0
+    total_discarded: int = 0
+
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            logger.error(
+                f"[LLM] Exception dari gather task #{i} "
+                f"('{pages[i].source_name}'): {result}",
+                exc_info=result,
+            )
+            total_errors += 1
+            continue
+        entries, errors, discarded = result
         all_entries.extend(entries)
         total_errors    += errors
         total_discarded += discarded
 
     logger.info(
-        f"[LLM] Analisis selesai: "
+        f"[LLM] Analisis selesai (paralel, {len(pages)} page): "
         f"{len(all_entries)} entry valid | "
-        f"{total_discarded} entry dibuang (non-whole/kupas/frozen) | "
+        f"{total_discarded} entry dibuang | "
         f"{total_errors} parse error."
     )
     return all_entries, total_errors, total_discarded

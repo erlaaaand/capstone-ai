@@ -1,5 +1,10 @@
+# app/api/routes.py
+
+from __future__ import annotations
+
 import asyncio
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, Response, UploadFile, status
@@ -16,10 +21,11 @@ from core.logger import get_logger
 from core.middleware import AuditLogger
 from core.security import KeyScope
 from schemas.request import PredictionRequestBase64
-from schemas.response import PredictionResponse
+from schemas.response import MarketContextResponse, PredictionResponse, VarietyScore
 from services.image_processor import ImageProcessor
 from services.inference_service import InferenceService
 from services.clip_service import CLIPService
+from agents.market_intelligence.store import get_market_store
 
 logger = get_logger(__name__)
 
@@ -34,26 +40,19 @@ MAGIC_BYTES: dict = {
 
 
 def _check_magic_bytes(data: bytes, ext: str) -> bool:
-
     if ext not in MAGIC_BYTES:
         return True
-
     header = data[:12]
-
     for magic in MAGIC_BYTES[ext]:
         if not header.startswith(magic):
             continue
-
         if ext == "webp":
-
             return (
                 len(data) >= 12
                 and data[0:4] == b"RIFF"
                 and data[8:12] == b"WEBP"
             )
-
         return True
-
     return False
 
 
@@ -67,27 +66,51 @@ async def _read_file_async(file: UploadFile) -> bytes:
 def _validate_file(data: bytes, filename: str, request_id: str, client_ip: str) -> str:
     if len(data) == 0:
         raise InvalidImageException(detail="File kosong.")
-
     if len(data) > settings.max_file_size_bytes:
         raise FileTooLargeException(
             detail=f"File terlalu besar. Maksimum {settings.MAX_FILE_SIZE_MB}MB."
         )
-
     safe_filename = "".join(c for c in filename if c.isalnum() or c in "._-")
     ext = safe_filename.rsplit(".", 1)[-1].lower() if "." in safe_filename else ""
-
     if ext not in settings.allowed_extensions_set:
         raise UnsupportedFileTypeException(
             detail=f"Tipe '{ext}' tidak didukung. Diizinkan: {settings.ALLOWED_EXTENSIONS}"
         )
-
     if not _check_magic_bytes(data, ext):
         AuditLogger.suspicious_file(request_id, "Magic bytes mismatch", filename, client_ip)
         raise UnsupportedFileTypeException(
             detail=f"Konten file tidak cocok ekstensi '.{ext}'."
         )
-
     return ext
+
+
+async def _fetch_market_context(
+    variety_code: str,
+) -> Optional[MarketContextResponse]:
+
+    try:
+        store   = get_market_store()
+        summary = await store.get_price_summary()
+        is_stale = await store.is_stale()
+
+        variety_summary = summary.get(variety_code)
+        if variety_summary is None:
+            return None
+
+        return MarketContextResponse(
+            variety_code  = variety_code,
+            price_min_idr = variety_summary.price_min_idr,
+            price_max_idr = variety_summary.price_max_idr,
+            price_avg_idr = variety_summary.price_avg_idr,
+            sample_count  = variety_summary.sample_count,
+            scraped_at    = variety_summary.scraped_at,
+            data_is_stale = is_stale,
+        )
+    except Exception as exc:
+        logger.warning(
+            f"[Routes] Gagal mengambil market context untuk '{variety_code}': {exc}"
+        )
+        return None
 
 
 @router.post(
@@ -95,10 +118,11 @@ def _validate_file(data: bytes, filename: str, request_id: str, client_ip: str) 
     response_model = PredictionResponse,
     summary        = "Klasifikasi Varietas Durian",
     description    = (
-        "Klasifikasi varietas durian dari gambar. "
-        "Memerlukan API key (`X-API-Key` header) dengan scope `predict`.\n\n"
+        "Klasifikasi varietas durian dari gambar menggunakan EfficientNetB0.\n\n"
         "**Input:** File upload (`multipart/form-data`) atau Base64 JSON payload.\n\n"
-        "**Output:** Nama varietas, deskripsi, confidence semua varietas, metadata enhancement."
+        "**Output:** Varietas terdeteksi, confidence semua kelas, metadata enhancement, "
+        "dan ringkasan harga pasar terkini (jika data tersedia).\n\n"
+        "**Memerlukan API key scope `predict`.**"
     ),
 )
 async def predict_durian(
@@ -106,11 +130,10 @@ async def predict_durian(
     response: Response,
     file:     Optional[UploadFile] = File(
         default     = None,
-        description = "File gambar (JPG/PNG/WebP, ukuran apapun).",
+        description = "File gambar (JPG/PNG/WebP).",
     ),
     payload: Optional[PredictionRequestBase64] = Body(default=None),
-
-    auth: AuthResult = Depends(require_scope(KeyScope.PREDICT)),
+    auth:    AuthResult = Depends(require_scope(KeyScope.PREDICT)),
 ) -> PredictionResponse:
     request_id = getattr(request.state, "request_id", str(uuid.uuid4())[:8])
     client_ip  = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (
@@ -141,7 +164,6 @@ async def predict_durian(
             data = await _read_file_async(file)
             _validate_file(data, file.filename or "", request_id, client_ip)
             raw_input = data
-
         elif has_payload:
             if payload.filename:
                 ext = payload.filename.rsplit(".", 1)[-1].lower() if "." in payload.filename else ""
@@ -152,6 +174,7 @@ async def predict_durian(
         if raw_input is None:
             raise InvalidImageException(detail="Gagal mengekstrak data gambar.")
 
+        # CLIP validation + image processing dijalankan paralel
         clip_task    = asyncio.to_thread(CLIPService.is_durian, raw_input)
         process_task = asyncio.to_thread(ImageProcessor.process, raw_input)
 
@@ -168,14 +191,17 @@ async def predict_durian(
         pred_response = await asyncio.to_thread(
             InferenceService.predict, tensor, enhanced, preproc_ms
         )
-
         pred_response.request_id = request_id
+
+        market_ctx = await _fetch_market_context(pred_response.prediction.variety_code)
+        pred_response.market_context = market_ctx
 
         logger.info(
             f"[{request_id}] ✓ {pred_response.prediction.variety_name} "
             f"({pred_response.prediction.confidence_score:.4f}) "
             f"key={auth.key_prefix} "
-            f"inf={pred_response.inference_time_ms:.1f}ms"
+            f"inf={pred_response.inference_time_ms:.1f}ms "
+            f"market_ctx={'yes' if market_ctx else 'no'}"
         )
         return pred_response
 
@@ -186,6 +212,6 @@ async def predict_durian(
     except Exception as e:
         logger.error(f"[{request_id}] Unhandled: {str(e)}", exc_info=True)
         raise HTTPException(
-            status_code = 500,
-            detail      = "Error tidak terduga saat memproses prediksi.",
+            status_code=500,
+            detail="Error tidak terduga saat memproses prediksi.",
         )

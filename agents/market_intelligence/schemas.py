@@ -9,25 +9,32 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 class DurianVariety(str, Enum):
-    GOLDEN_BUN  = "D13"    # D13  — Golden Bun (Johor)
-    MUSANG_KING = "D197"   # D197 — Musang King / Mao Shan Wang / Raja Kunyit (Kelantan)
-    DATO_NINA   = "D2"     # D2   — Dato Nina (Melaka)
-    DURI_HITAM  = "D200"   # D200 — Duri Hitam / Black Thorn / Ochee (Penang)
-    SULTAN      = "D24"    # D24  — Sultan / Bukit Merah (Perak/Selangor)
+    GOLDEN_BUN  = "D13"   # Golden Bun (Johor)
+    MUSANG_KING = "D197"  # Musang King / Mao Shan Wang / Raja Kunyit (Kelantan)
+    DATO_NINA   = "D2"    # Dato Nina (Melaka)
+    DURI_HITAM  = "D200"  # Duri Hitam / Black Thorn / Ochee (Penang)
+    SULTAN      = "D24"   # Sultan / Bukit Merah (Perak / Selangor)
+
+
+class AgentRunStatus(str, Enum):
+    SUCCESS       = "success"
+    PARTIAL       = "partial"        # Ada target gagal, tapi ada data masuk
+    SCRAPER_ERROR = "scraper_error"
+    LLM_ERROR     = "llm_error"
+    NO_DATA       = "no_data"
 
 class ScrapedPage(BaseModel):
-
-    source_name:   str       = Field(..., description="Nama sumber (dari ScrapingTarget.name).")
-    source_url:    str       = Field(..., description="URL halaman yang di-navigate Playwright.")
-    raw_json:      str       = Field(
+    source_name:   str      = Field(..., description="Nama sumber (dari ScrapingTarget.name).")
+    source_url:    str      = Field(..., description="URL halaman yang di-navigate Playwright.")
+    raw_json:      str      = Field(
         ...,
         description=(
             "JSON mentah yang di-intercept dari XHR/Fetch API e-commerce. "
             "Berupa JSON string tunggal atau array JSON yang di-join."
         ),
     )
-    scraped_at:    datetime  = Field(default_factory=lambda: datetime.now(timezone.utc))
-    success:       bool      = Field(default=True)
+    scraped_at:    datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    success:       bool     = Field(default=True)
     error_message: Optional[str] = Field(default=None)
 
     @field_validator("raw_json")
@@ -37,103 +44,56 @@ class ScrapedPage(BaseModel):
             raise ValueError("raw_json tidak boleh kosong jika success=True.")
         return v
 
+
 class MarketPriceEntry(BaseModel):
     variety_code:       DurianVariety = Field(
         ...,
-        description="Kode DOA varietas. D13/D197/D2/D200/D24.",
+        description="Kode DOA varietas. D13 / D197 / D2 / D200 / D24.",
     )
     variety_alias:      str = Field(
         ...,
-        description=(
-            "Alias yang ditemukan di JSON sumber "
-            "(cth: 'musang king', 'ochee', 'golden bun', 'sultan')."
-        ),
+        description="Alias yang ditemukan di JSON sumber (cth: 'musang king', 'ochee').",
         max_length=100,
     )
 
-    # --- FIELD AUDIT TRAIL (v2) ---
-    is_whole_fruit:     bool = Field(
+    is_whole_fruit:   bool = Field(
         ...,
         description=(
             "TRUE jika dan hanya jika produk adalah DURIAN UTUH DENGAN KULIT. "
-            "FALSE untuk kupas, frozen, box, 400gr/500gr pack, bibit, olahan, dll. "
-            "Field ini adalah gatekeeper utama anti data leakage."
+            "Gatekeeper utama anti data leakage."
         ),
     )
-    weight_reference:   str = Field(
+    weight_reference: str = Field(
         ...,
         description=(
             "Referensi berat ASLI dari listing penjual sebelum normalisasi, "
-            "cth: 'per buah 2-3 kg', '1 box isi 2 buah', 'per kg'. "
-            "Digunakan untuk audit dan verifikasi kalkulasi LLM."
+            "cth: 'per buah 2-3 kg', 'per kg'."
         ),
         max_length=200,
     )
-    notes:              Optional[str] = Field(
+    notes: Optional[str] = Field(
         default=None,
         max_length=500,
         description=(
             "Chain-of-Thought LLM: catatan matematis normalisasi harga ke per-Kg. "
-            "Cth: 'Harga listing Rp800.000/2kg → 800000/2 = 400000 per kg'. "
             "None jika harga sudah dalam satuan per-Kg dari sumber."
         ),
     )
 
-    # --- Harga (IDR per Kg) ---
-    price_per_kg_min:   Optional[float] = Field(
-        default=None,
-        ge=0,
-        description="Harga minimum per Kg (IDR). None jika tidak ada range.",
-    )
-    price_per_kg_max:   Optional[float] = Field(
-        default=None,
-        ge=0,
-        description="Harga maksimum per Kg (IDR). None jika tidak ada range.",
-    )
-    price_per_kg_avg:   Optional[float] = Field(
-        default=None,
-        ge=0,
-        description="Harga rata-rata / titik tunggal per Kg (IDR).",
-    )
-    price_per_unit_min: Optional[float] = Field(
-        default=None,
-        ge=0,
-        description="Harga minimum per buah (IDR). Opsional, pelengkap harga/Kg.",
-    )
-    price_per_unit_max: Optional[float] = Field(
-        default=None,
-        ge=0,
-        description="Harga maksimum per buah (IDR). Opsional, pelengkap harga/Kg.",
-    )
+    price_per_kg_min: Optional[float] = Field(default=None, ge=0)
+    price_per_kg_max: Optional[float] = Field(default=None, ge=0)
+    price_per_kg_avg: Optional[float] = Field(default=None, ge=0)
 
-    # --- Metadata Konteks ---
-    location_hint:      Optional[str] = Field(
-        default=None,
-        max_length=200,
-        description="Lokasi yang disebut di sumber (cth: 'Jakarta', 'Medan', 'online').",
-    )
-    seller_type:        Optional[str] = Field(
-        default=None,
-        max_length=100,
-        description="Jenis penjual (cth: 'kebun', 'reseller', 'importir', 'toko online').",
-    )
-    confidence:         float = Field(
-        default=0.5,
-        ge=0.0,
-        le=1.0,
-        description="Kepercayaan LLM terhadap keakuratan entry ini (0–1).",
-    )
-    raw_text_snippet:   Optional[str] = Field(
-        default=None,
-        max_length=500,
-        description=(
-            "Potongan JSON sumber yang menjadi dasar ekstraksi, "
-            "misal field 'name' dan 'price' dari product object."
-        ),
-    )
+    price_per_unit_min: Optional[float] = Field(default=None, ge=0)
+    price_per_unit_max: Optional[float] = Field(default=None, ge=0)
+
+    location_hint: Optional[str] = Field(default=None, max_length=200)
+    seller_type:   Optional[str] = Field(default=None, max_length=100)
+    confidence:    float         = Field(default=0.5, ge=0.0, le=1.0)
+    raw_text_snippet: Optional[str] = Field(default=None, max_length=500)
 
     @model_validator(mode="after")
-    def at_least_one_price_present(self) -> MarketPriceEntry:
+    def at_least_one_price_present(self) -> "MarketPriceEntry":
         prices = [
             self.price_per_kg_min,
             self.price_per_kg_max,
@@ -143,72 +103,49 @@ class MarketPriceEntry(BaseModel):
         ]
         if not any(p is not None for p in prices):
             raise ValueError(
-                "Setidaknya satu field harga harus terisi "
-                "(price_per_kg_min/max/avg atau price_per_unit_min/max)."
+                "Setidaknya satu field harga harus terisi."
             )
         return self
 
     @model_validator(mode="after")
-    def max_not_less_than_min(self) -> MarketPriceEntry:
+    def max_not_less_than_min(self) -> "MarketPriceEntry":
         if (
             self.price_per_kg_min is not None
             and self.price_per_kg_max is not None
             and self.price_per_kg_max < self.price_per_kg_min
         ):
-            raise ValueError(
-                "price_per_kg_max tidak boleh lebih kecil dari price_per_kg_min."
-            )
+            raise ValueError("price_per_kg_max tidak boleh lebih kecil dari price_per_kg_min.")
         if (
             self.price_per_unit_min is not None
             and self.price_per_unit_max is not None
             and self.price_per_unit_max < self.price_per_unit_min
         ):
-            raise ValueError(
-                "price_per_unit_max tidak boleh lebih kecil dari price_per_unit_min."
-            )
+            raise ValueError("price_per_unit_max tidak boleh lebih kecil dari price_per_unit_min.")
         return self
 
-    @model_validator(mode="after")
-    def whole_fruit_gate(self) -> MarketPriceEntry:
-        if not self.is_whole_fruit:
-            pass
-        return self
-
-class AgentRunStatus(str, Enum):
-    SUCCESS       = "success"
-    PARTIAL       = "partial"        # Ada target gagal, tapi ada data masuk
-    SCRAPER_ERROR = "scraper_error"
-    LLM_ERROR     = "llm_error"
-    NO_DATA       = "no_data"
 
 
 class MarketReportPayload(BaseModel):
-    agent_version:  str             = Field(default="2.0.0")
-    run_id:         str             = Field(..., description="UUID unik per run agen.")
-    run_started_at: datetime        = Field(..., description="Waktu mulai run agen.")
-    run_ended_at:   datetime        = Field(default_factory=lambda: datetime.now(timezone.utc))
-    status:         AgentRunStatus  = Field(...)
-    entries:        List[MarketPriceEntry] = Field(
+    agent_version:   str            = Field(..., description="Versi service saat run (dari settings.APP_VERSION).")
+    run_id:          str            = Field(..., description="UUID unik per run agen.")
+    run_started_at:  datetime       = Field(..., description="Waktu mulai run agen.")
+    run_ended_at:    datetime       = Field(default_factory=lambda: datetime.now(timezone.utc))
+    status:          AgentRunStatus = Field(...)
+    entries:         List[MarketPriceEntry] = Field(
         default_factory=list,
         description=(
             "Semua entry harga yang LOLOS validasi ganda: "
             "LLM validation + Python is_whole_fruit gate."
         ),
     )
-    sources_scraped:       int = Field(default=0, description="Jumlah URL berhasil di-intercept.")
-    sources_failed:        int = Field(default=0, description="Jumlah URL gagal di-intercept.")
-    llm_parse_errors:      int = Field(default=0, description="Jumlah error parsing output LLM.")
-    entries_discarded:     int = Field(
+    sources_scraped:   int = Field(default=0)
+    sources_failed:    int = Field(default=0)
+    llm_parse_errors:  int = Field(default=0)
+    entries_discarded: int = Field(
         default=0,
-        description=(
-            "Jumlah entry LLM yang dibuang karena is_whole_fruit=False "
-            "(produk kupas/frozen/olahan). Metrik kesehatan data."
-        ),
+        description="Entry yang dibuang karena is_whole_fruit=False.",
     )
-    error_details:         Optional[str] = Field(
-        default=None,
-        description="Pesan error ringkas jika ada.",
-    )
+    error_details: Optional[str] = Field(default=None)
 
     @property
     def entry_count(self) -> int:

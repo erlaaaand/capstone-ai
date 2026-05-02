@@ -1,3 +1,7 @@
+# app/api/health.py
+
+from __future__ import annotations
+
 import os
 import time
 
@@ -10,6 +14,7 @@ from core.rate_limiter import get_rate_limiter
 from core.security import KeyScope, get_key_manager
 from models.model_loader import get_model_loader
 from schemas.response import HealthResponse
+from agents.market_intelligence.store import get_market_store
 
 router = APIRouter()
 _startup_time = time.time()
@@ -34,8 +39,12 @@ async def ping():
     "/health",
     response_model = HealthResponse,
     summary        = "Detailed Health Check (Protected)",
-    description    = "Status detail service termasuk model, memory, dan rate limiter. Memerlukan API key.",
-    tags           = ["System"],
+    description    = (
+        "Status detail service termasuk model, memory, rate limiter, "
+        "dan status data Market Intelligence.\n\n"
+        "**Memerlukan API key.**"
+    ),
+    tags = ["System"],
 )
 async def health_check(
     auth: AuthResult = Depends(verify_api_key),
@@ -54,21 +63,28 @@ async def health_check(
 
     rl_stats = get_rate_limiter().get_stats()
 
+    # Upgrade: status market data
+    store              = get_market_store()
+    market_available   = await store.has_data()
+    market_stale       = await store.is_stale()
+
     return HealthResponse(
-        status             = "healthy" if is_loaded else "degraded",
-        model_loaded       = is_loaded,
-        app_name           = settings.APP_NAME,
-        version            = settings.APP_VERSION,
-        uptime_seconds     = uptime_sec,
-        memory_usage_mb    = round(mem_mb, 1),
-        cpu_percent        = round(cpu_pct, 1),
-        rate_limiter_stats = rl_stats,
-        config_summary     = {
+        status                 = "healthy" if is_loaded else "degraded",
+        model_loaded           = is_loaded,
+        app_name               = settings.APP_NAME,
+        version                = settings.APP_VERSION,
+        uptime_seconds         = uptime_sec,
+        memory_usage_mb        = round(mem_mb, 1),
+        cpu_percent            = round(cpu_pct, 1),
+        rate_limiter_stats     = rl_stats,
+        config_summary         = {
             "num_classes":      settings.num_classes,
             "image_size":       settings.IMAGE_SIZE,
             "enhancement":      settings.ENABLE_ENHANCEMENT,
             "max_file_size_mb": settings.MAX_FILE_SIZE_MB,
         },
+        market_data_available  = market_available,
+        market_data_stale      = market_stale,
     )
 
 
@@ -77,16 +93,7 @@ async def health_check(
     summary     = "Hot-Reload API Keys (Admin Only)",
     description = (
         "Reload API keys dari environment variables tanpa restart server.\n\n"
-        "Gunakan untuk **zero-downtime key rotation**:\n"
-        "1. Tambahkan key baru ke `.env` atau environment variables\n"
-        "2. Panggil endpoint ini\n"
-        "3. Set key lama sebagai `API_KEY_N_DEPRECATED=true`\n"
-        "4. Panggil endpoint ini lagi\n"
-        "5. Hapus key lama setelah semua client update\n\n"
-        "**Memerlukan scope `admin`.**\n\n"
-        "**Perbaikan Bug #2 & #4:** Endpoint ini sekarang benar-benar "
-        "me-reload key baru dari `.env` menggunakan `load_dotenv(override=True)` "
-        "dan juga me-refresh `Settings` cache agar konfigurasi tetap sinkron."
+        "**Memerlukan scope `admin`.**"
     ),
     tags = ["Admin"],
 )
@@ -94,19 +101,16 @@ async def reload_api_keys(
     auth: AuthResult = Depends(require_scope(KeyScope.ADMIN)),
 ):
     manager = get_key_manager()
-
     try:
         manager.load_keys()
-        key_count = len(manager._keys)
-
+        key_count     = manager.loaded_key_count()
         fresh_settings = reload_settings()
-
         return {
-            "success":        True,
-            "message":        "API keys dan settings berhasil di-reload.",
-            "key_count":      key_count,
-            "reloaded_by":    auth.key_prefix,
-            "app_version":    fresh_settings.APP_VERSION,
+            "success":            True,
+            "message":            "API keys dan settings berhasil di-reload.",
+            "key_count":          key_count,
+            "reloaded_by":        auth.key_prefix,
+            "app_version":        fresh_settings.APP_VERSION,
             "settings_refreshed": True,
         }
     except Exception as e:

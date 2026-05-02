@@ -1,13 +1,10 @@
+# schemas/request.py — tidak ada perubahan
 from typing import Optional
-
 from pydantic import BaseModel, Field, field_validator
 
-
 class PredictionRequestBase64(BaseModel):
-
     image_base64: str = Field(
-        ...,
-        min_length=1,
+        ..., min_length=1,
         description="Base64-encoded image data (without data URI prefix).",
         json_schema_extra={"example": "/9j/4AAQSkZJRgABAQ..."},
     )

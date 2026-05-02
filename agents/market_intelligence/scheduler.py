@@ -16,6 +16,7 @@ logger = get_logger("agent.scheduler")
 
 _JOB_ID = "market_intelligence_agent"
 
+
 def _on_job_executed(event: JobExecutionEvent) -> None:
     if event.job_id != _JOB_ID:
         return
@@ -47,9 +48,9 @@ class MarketIntelligenceScheduler:
         scheduler = AsyncIOScheduler(
             timezone=SCHEDULER_CONFIG.timezone,
             job_defaults={
-                "coalesce":       True,   # Jalankan sekali jika tertinggal beberapa jadwal
-                "max_instances":  1,      # Tidak boleh ada dua instance bersamaan
-                "misfire_grace_time": 600,  # Toleransi 10 menit keterlambatan trigger
+                "coalesce":           True,
+                "max_instances":      1,
+                "misfire_grace_time": 600,
             },
         )
         scheduler.add_listener(_on_job_executed, EVENT_JOB_EXECUTED)
@@ -96,6 +97,7 @@ class MarketIntelligenceScheduler:
     async def trigger_now(self) -> None:
         logger.info("[Scheduler] Manual trigger: menjalankan agent sekarang...")
         await run_once()
+
 
 _scheduler_instance: Optional[MarketIntelligenceScheduler] = None
 

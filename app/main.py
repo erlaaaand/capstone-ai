@@ -1,3 +1,7 @@
+# app/main.py
+
+from __future__ import annotations
+
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -26,16 +30,12 @@ from agents.market_intelligence.scheduler import get_scheduler
 logger = get_logger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Lifespan helpers — memisahkan startup/shutdown agar lifespan tetap ringkas
-# ---------------------------------------------------------------------------
-
 async def _run_startup() -> None:
     logger.info("=" * 60)
     logger.info(f"  Memulai {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info("=" * 60)
 
-    _safe_startup("Memuat API keys", _load_api_keys)
+    _safe_startup("Memuat API keys",   _load_api_keys)
     _safe_startup("Memuat ONNX model", _load_onnx_model)
     _safe_startup("Memuat CLIP model", _load_clip_model)
     await _safe_startup_async("Memulai rate limiter cleanup task", _start_rate_limiter)
@@ -58,10 +58,6 @@ async def _run_shutdown() -> None:
     _safe_shutdown("ONNX model", get_model_loader().unload_model)
     logger.info("[Shutdown] Selesai.")
 
-
-# ---------------------------------------------------------------------------
-# Unit startup/shutdown — satu fungsi per resource
-# ---------------------------------------------------------------------------
 
 def _load_api_keys() -> None:
     get_key_manager().load_keys()
@@ -133,6 +129,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await _run_shutdown()
 
 
+
 def _build_openapi_schema(app: FastAPI) -> dict:
     if app.openapi_schema:
         return app.openapi_schema
@@ -141,12 +138,19 @@ def _build_openapi_schema(app: FastAPI) -> dict:
         title       = settings.APP_NAME,
         version     = settings.APP_VERSION,
         description = (
-            "## Durian Variety Classification API\n\n"
-            "API enterprise untuk klasifikasi varietas durian menggunakan "
+            "## Durian Authenticity & Market Intelligence API\n\n"
+            "API untuk dua fitur utama aplikasi konsumen:\n\n"
+            "### 1. Klasifikasi Varietas Durian\n"
+            "Validasi keaslian varietas durian dari gambar menggunakan "
             "EfficientNetB0 deep learning model.\n\n"
+            "**Endpoint:** `POST /api/v1/predict`\n\n"
+            "### 2. Informasi Harga Pasar\n"
+            "Data harga durian premium (IDR/kg) dari marketplace Indonesia, "
+            "diperbarui otomatis setiap hari oleh Market Intelligence Agent.\n\n"
+            "**Endpoint:** `GET /api/v1/market/prices`\n\n"
+            "**Endpoint:** `GET /api/v1/market/report`\n\n"
             "### Autentikasi\n"
-            "Semua endpoint `/api/v1/predict` dan `/api/v1/health` memerlukan "
-            "API key yang valid.\n\n"
+            "Semua endpoint memerlukan API key yang valid.\n\n"
             "**Header:** `X-API-Key: dk_live_your_key_here`\n\n"
             "**Alternatif:** `Authorization: Bearer dk_live_your_key_here`\n\n"
             "### Rate Limiting\n"
@@ -155,12 +159,13 @@ def _build_openapi_schema(app: FastAPI) -> dict:
             "| Free | 60 req/menit |\n"
             "| Standard | 300 req/menit |\n"
             "| Premium | 1000 req/menit |\n"
-            "| Unlimited | Tidak terbatas |\n\n"
-            "Rate limit headers: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, "
-            "`X-RateLimit-Reset`"
+            "| Unlimited | Tidak terbatas |\n"
         ),
         routes  = app.routes,
-        contact = {"name": "Durian API Support", "email": "api-support@example.com"},
+        contact = {
+            "name":  settings.API_SUPPORT_NAME,
+            "email": settings.API_SUPPORT_EMAIL,
+        },
     )
 
     schema.setdefault("components", {})
@@ -178,15 +183,16 @@ def _build_openapi_schema(app: FastAPI) -> dict:
             "description":  "Bearer token — masukkan API key setelah 'Bearer '.",
         },
     }
-    schema["security"]  = [{"ApiKeyAuth": []}, {"BearerAuth": []}]
+    schema["security"] = [{"ApiKeyAuth": []}, {"BearerAuth": []}]
     app.openapi_schema  = schema
     return schema
+
 
 def create_app() -> FastAPI:
     app = FastAPI(
         title       = settings.APP_NAME,
         version     = settings.APP_VERSION,
-        description = "Enterprise Durian Classification API",
+        description = "Durian Authenticity & Market Intelligence API",
         lifespan    = lifespan,
         docs_url    = "/docs"         if settings.DEBUG else None,
         redoc_url   = "/redoc"        if settings.DEBUG else None,
@@ -195,7 +201,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         PayloadSizeLimitMiddleware,
-        max_bytes = settings.max_file_size_bytes + (1024 * 1024),
+        max_bytes=settings.max_file_size_bytes + (1024 * 1024),
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 
@@ -238,7 +244,7 @@ def create_app() -> FastAPI:
             status_code = 404,
             content     = {
                 "success": False, "error": "NotFound",
-                "detail": f"Endpoint '{request.url.path}' tidak ditemukan.",
+                "detail":  f"Endpoint '{request.url.path}' tidak ditemukan.",
                 "request_id": getattr(request.state, "request_id", "unknown"),
             },
         )
@@ -249,20 +255,24 @@ def create_app() -> FastAPI:
             status_code = 405,
             content     = {
                 "success": False, "error": "MethodNotAllowed",
-                "detail": f"Method '{request.method}' tidak diizinkan di '{request.url.path}'.",
+                "detail":  f"Method '{request.method}' tidak diizinkan di '{request.url.path}'.",
                 "request_id": getattr(request.state, "request_id", "unknown"),
             },
         )
 
-    @app.get("/", include_in_schema=False, summary="API Info")
+    @app.get("/", include_in_schema=False)
     async def root():
         return {
             "name":          settings.APP_NAME,
             "version":       settings.APP_VERSION,
             "status":        "operational",
             "docs":          "/docs" if settings.DEBUG else "disabled (production)",
-            "health":        "/api/v1/health",
-            "predict":       "/api/v1/predict",
+            "endpoints": {
+                "predict":       "POST /api/v1/predict",
+                "market_prices": "GET /api/v1/market/prices",
+                "market_report": "GET /api/v1/market/report",
+                "health":        "GET /api/v1/health",
+            },
             "auth_required": True,
             "auth_header":   "X-API-Key",
         }

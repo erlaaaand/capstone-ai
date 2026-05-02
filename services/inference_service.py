@@ -1,3 +1,6 @@
+# services/inference_service.py
+from __future__ import annotations
+
 import time
 from typing import Dict, List
 
@@ -33,8 +36,8 @@ class InferenceService:
     @staticmethod
     def predict(
         image_tensor: np.ndarray,
-        enhanced: bool = False,
-        preproc_ms: float = 0.0,
+        enhanced:     bool  = False,
+        preproc_ms:   float = 0.0,
     ) -> PredictionResponse:
         logger.debug(f"Inferensi: shape={image_tensor.shape}, enhanced={enhanced}")
 
@@ -62,9 +65,9 @@ class InferenceService:
             raise
 
         try:
-            t_start  = time.perf_counter()
-            outputs  = session.run([output_name], {input_name: image_tensor})
-            inf_ms   = (time.perf_counter() - t_start) * 1000.0
+            t_start = time.perf_counter()
+            outputs = session.run([output_name], {input_name: image_tensor})
+            inf_ms  = (time.perf_counter() - t_start) * 1000.0
             logger.debug(f"ONNX selesai dalam {inf_ms:.2f}ms")
         except Exception as e:
             logger.error(f"ONNX session.run() gagal: {str(e)}")
@@ -74,8 +77,8 @@ class InferenceService:
             raw_probs     = outputs[0][0]
             probabilities = _ensure_probabilities(raw_probs)
 
-            codes         = settings.class_names_list
-            num_classes   = len(codes)
+            codes       = settings.class_names_list
+            num_classes = len(codes)
 
             if len(probabilities) != num_classes:
                 raise InferenceException(
@@ -85,17 +88,16 @@ class InferenceService:
                     )
                 )
 
+            # Upgrade: key = variety_code (bukan nama) untuk determinisme lookup
             confidence_scores: Dict[str, float] = {}
             all_varieties:     List[VarietyScore] = []
 
             for code, prob in zip(codes, probabilities):
-                name  = get_display_name(code)
                 score = round(float(prob), 6)
-                confidence_scores[name] = score
+                confidence_scores[code] = score
                 all_varieties.append(VarietyScore(
-                    variety_code=code,
-                    variety_name=name,
-                    confidence_score=score,
+                    variety_code     = code,
+                    confidence_score = score,
                 ))
 
             all_varieties.sort(key=lambda v: v.confidence_score, reverse=True)
@@ -112,21 +114,22 @@ class InferenceService:
             )
 
             return PredictionResponse(
-                success=True,
-                prediction=PredictionResult(
-                    variety_code=top_code,
-                    variety_name=top_info.display_name,
-                    local_name=top_info.local_name,
-                    origin=top_info.origin,
-                    description=top_info.description,
-                    confidence_score=top_conf,
+                success    = True,
+                prediction = PredictionResult(
+                    variety_code     = top_code,
+                    variety_name     = top_info.display_name,
+                    local_name       = top_info.local_name,
+                    origin           = top_info.origin,
+                    description      = top_info.description,
+                    confidence_score = top_conf,
                 ),
-                all_varieties=all_varieties,
-                confidence_scores=confidence_scores,
-                image_enhanced=enhanced,
-                inference_time_ms=round(inf_ms, 2),
-                preprocessing_time_ms=round(preproc_ms, 2),
-                model_version=settings.APP_VERSION,
+                all_varieties         = all_varieties,
+                confidence_scores     = confidence_scores,
+                image_enhanced        = enhanced,
+                inference_time_ms     = round(inf_ms, 2),
+                preprocessing_time_ms = round(preproc_ms, 2),
+                model_version         = settings.APP_VERSION,
+                market_context        = None,  # Diisi oleh routes.py setelah predict
             )
 
         except InferenceException:

@@ -94,15 +94,20 @@ class Settings(BaseSettings):
     DEBUG:       bool = False
     LOG_LEVEL:   str  = "INFO"
 
-    MODEL_PATH: str = "models/weights/efficientnet_b0.onnx"
+    # [FIX BUG-09] MODEL_PATH default diperbarui ke model v10 (EfficientNetV2-S).
+    # Default ini sebagai fallback jika .env tidak menyetel MODEL_PATH.
+    # Nilai aktual selalu dibaca dari .env — pastikan .env sudah diperbarui.
+    MODEL_PATH: str = "models/weights/durian_v10.onnx"
 
-    # BUG FIX: default sebelumnya "D101,D13,D197,D2,D200,D24" (6 kelas) tidak sinkron
-    # dengan data/class_indices.json yang hanya mendefinisikan 5 kelas.
-    # D101 tidak ada dalam training data — dihapus dari default.
-    # Urutan WAJIB alphabetical sesuai folder training (indeks 0–4).
+    # CLASS_NAMES: urutan WAJIB alphabetical sesuai folder training (indeks 0–4).
+    # D101 sudah dihapus — tidak ada dalam training data model v10.
     CLASS_NAMES: str = "D13,D197,D2,D200,D24"
 
-    IMAGE_SIZE: int = 640
+    # [FIX BUG-08] IMAGE_SIZE default diubah 640 → 480.
+    # Model v10 (EfficientNetV2-S) menggunakan input tensor 480×480.
+    # Default 640 sebelumnya tidak sinkron dengan .env.example dan akan
+    # menyebabkan ONNX shape mismatch error jika .env tidak diset eksplisit.
+    IMAGE_SIZE: int = 480
 
     ENABLE_ENHANCEMENT:   bool  = True
     ENABLE_CLAHE:         bool  = True
@@ -132,8 +137,13 @@ class Settings(BaseSettings):
     @field_validator("IMAGE_SIZE")
     @classmethod
     def validate_image_size(cls, v: int) -> int:
+        # [FIX BUG-08] Validator tetap 32–1024 untuk fleksibilitas.
+        # Nilai yang valid untuk production: 224 (model v0), 480 (model v10).
         if not 32 <= v <= 1024:
-            raise ValueError("IMAGE_SIZE harus berada di antara 32–1024.")
+            raise ValueError(
+                f"IMAGE_SIZE={v} tidak valid. Harus antara 32–1024. "
+                "Untuk model v10 gunakan IMAGE_SIZE=480."
+            )
         return v
 
     @field_validator("MAX_FILE_SIZE_MB")

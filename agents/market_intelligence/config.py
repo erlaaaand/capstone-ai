@@ -8,6 +8,12 @@ Changelog v2:
   - SCRAPING_TARGETS diperbarui dengan pola URL XHR/Fetch API e-commerce.
   - OllamaConfig: `max_input_chars` dinaikkan (JSON intercept lebih ringkas dari HTML).
   - Semua nilai konfigurasi WAJIB diset via environment variable — tidak hardcode.
+
+Changelog v2.1 (Bug Fix):
+  - [FIX BUG-04/11] NestJSClientConfig.endpoint dikoreksi:
+    '/api/market-intelligence/ingest' → '/api/v1/ai-integration/market-report'
+    Sesuai NestJS: @Controller('ai-integration') + @Post('market-report')
+    dengan global prefix 'api/v1' di main.ts.
 """
 
 from __future__ import annotations
@@ -195,7 +201,14 @@ class NestJSClientConfig:
     base_url:          str   = field(
         default_factory=lambda: os.getenv("NESTJS_BASE_URL", "http://localhost:3000")
     )
-    endpoint:          str   = "/api/market-intelligence/ingest"
+    # [FIX BUG-04] Endpoint dikoreksi sesuai NestJS routing aktual:
+    #   @Controller('ai-integration') + @Post('market-report')
+    #   + global prefix 'api/v1' (set di main.ts: app.setGlobalPrefix('api/v1'))
+    #   = /api/v1/ai-integration/market-report
+    #
+    # SEBELUMNYA (salah): "/api/market-intelligence/ingest"
+    #   → route tidak pernah ada di NestJS → selalu 404
+    endpoint:          str   = "/api/v1/ai-integration/market-report"
     api_key:           str   = field(
         default_factory=lambda: os.getenv("NESTJS_INTERNAL_API_KEY", "")
     )

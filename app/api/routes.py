@@ -25,7 +25,6 @@ from schemas.response import MarketContextResponse, PredictionResponse, VarietyS
 from services.image_processor import ImageProcessor
 from services.inference_service import InferenceService
 from services.clip_service import CLIPService
-from agents.market_intelligence.store import get_market_store
 
 logger = get_logger(__name__)
 
@@ -102,32 +101,6 @@ def _validate_file(data: bytes, filename: str, request_id: str, client_ip: str) 
 
     return ext
 
-
-async def _fetch_market_context(variety_code: str) -> Optional[MarketContextResponse]:
-    """Ambil konteks harga pasar untuk varietas tertentu."""
-    try:
-        store    = get_market_store()
-        summary  = await store.get_price_summary()
-        is_stale = await store.is_stale()
-
-        variety_summary = summary.get(variety_code)
-        if variety_summary is None:
-            return None
-
-        return MarketContextResponse(
-            variety_code  = variety_code,
-            price_min_idr = variety_summary.price_min_idr,
-            price_max_idr = variety_summary.price_max_idr,
-            price_avg_idr = variety_summary.price_avg_idr,
-            sample_count  = variety_summary.sample_count,
-            scraped_at    = variety_summary.scraped_at,
-            data_is_stale = is_stale,
-        )
-    except Exception as exc:
-        logger.warning(
-            f"[Routes] Gagal mengambil market context untuk '{variety_code}': {exc}"
-        )
-        return None
 
 
 @router.post(
@@ -228,16 +201,12 @@ async def predict_durian(
         )
         pred_response.request_id = request_id
 
-        market_ctx = await _fetch_market_context(pred_response.prediction.variety_code)
-        pred_response.market_context = market_ctx
-
         logger.info(
             f"[{request_id}] ✓ {pred_response.prediction.variety_name} "
             f"({pred_response.prediction.confidence_score:.4f}) "
             f"key={auth.key_prefix} "
             f"inf={pred_response.inference_time_ms:.1f}ms "
             f"preproc={pred_response.preprocessing_time_ms:.1f}ms "
-            f"market_ctx={'yes' if market_ctx else 'no'}"
         )
         return pred_response
 

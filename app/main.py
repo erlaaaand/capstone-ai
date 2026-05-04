@@ -36,7 +36,6 @@ from core.rate_limiter import get_rate_limiter
 from core.security import get_key_manager
 from models.model_loader import get_model_loader
 from services.clip_service import CLIPService
-from agents.market_intelligence.scheduler import get_scheduler
 
 logger = get_logger(__name__)
 
@@ -64,16 +63,6 @@ def _load_clip_model() -> None:
 async def _start_rate_limiter() -> None:
     await get_rate_limiter().start_cleanup_task()
     logger.info("[Startup] Rate limiter cleanup task aktif.")
-
-
-async def _start_scheduler() -> None:
-    await get_scheduler().start()
-    logger.info("[Startup] Market Intelligence Agent scheduler aktif.")
-
-
-async def _stop_scheduler() -> None:
-    await get_scheduler().stop()
-
 
 async def _stop_rate_limiter() -> None:
     await get_rate_limiter().stop_cleanup_task()
@@ -126,7 +115,6 @@ async def _run_startup() -> None:
     _safe_startup("Memuat ONNX model", _load_onnx_model)
     _safe_startup("Memuat CLIP model", _load_clip_model)
     await _safe_startup_async("Memulai rate limiter cleanup task", _start_rate_limiter)
-    await _safe_startup_async("Memulai Market Intelligence scheduler", _start_scheduler)
 
     logger.info(
         f"[Startup] Config: classes={settings.num_classes} "
@@ -140,7 +128,6 @@ async def _run_startup() -> None:
 
 async def _run_shutdown() -> None:
     logger.info("[Shutdown] Memulai graceful shutdown...")
-    await _safe_shutdown_async("Market Intelligence scheduler", _stop_scheduler)
     await _safe_shutdown_async("Rate limiter cleanup task", _stop_rate_limiter)
     _safe_shutdown("ONNX model", get_model_loader().unload_model)
     logger.info("[Shutdown] Selesai.")

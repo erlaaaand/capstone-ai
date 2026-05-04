@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import json
 import re
 import threading
@@ -8,6 +9,10 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from core.logger import get_logger
 from agents.market_intelligence.config import (
     CIRCUIT_BREAKER_CONFIG,
@@ -288,9 +293,10 @@ async def _scrape_single_target(target: ScrapingTarget) -> ScrapedPage:
 
 
 async def _scrape_with_body_capture(target: ScrapingTarget) -> ScrapedPage:
-    from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
-
     logger.info(f"[Scraper] Memulai body-capture intercept: '{target.name}' → {target.url}")
+    
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
     last_error: Optional[str] = None
     max_attempts = target.max_retries + 1

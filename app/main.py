@@ -1,9 +1,12 @@
-# app/main.py
-
 from __future__ import annotations
 
+import asyncio
+import sys
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,10 +32,6 @@ from agents.market_intelligence.scheduler import get_scheduler
 
 logger = get_logger(__name__)
 
-
-# ──────────────────────────────────────────────────────────────────────────
-# Startup helpers
-# ──────────────────────────────────────────────────────────────────────────
 
 def _load_api_keys() -> None:
     get_key_manager().load_keys()
@@ -111,6 +110,8 @@ async def _safe_shutdown_async(label: str, fn) -> None:
 async def _run_startup() -> None:
     logger.info("=" * 60)
     logger.info(f"  Memulai {settings.APP_NAME} v{settings.APP_VERSION}")
+    if sys.platform == "win32":
+        logger.info("  Platform: Windows — WindowsProactorEventLoopPolicy aktif.")
     logger.info("=" * 60)
 
     _safe_startup("Memuat API keys",   _load_api_keys)
@@ -137,20 +138,12 @@ async def _run_shutdown() -> None:
     logger.info("[Shutdown] Selesai.")
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Lifespan
-# ──────────────────────────────────────────────────────────────────────────
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await _run_startup()
     yield
     await _run_shutdown()
 
-
-# ──────────────────────────────────────────────────────────────────────────
-# OpenAPI schema
-# ──────────────────────────────────────────────────────────────────────────
 
 def _build_openapi_schema(app: FastAPI) -> dict:
     if app.openapi_schema:
@@ -211,10 +204,6 @@ def _build_openapi_schema(app: FastAPI) -> dict:
     return schema
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# App factory
-# ──────────────────────────────────────────────────────────────────────────
-
 def create_app() -> FastAPI:
     app = FastAPI(
         title       = settings.APP_NAME,
@@ -226,7 +215,6 @@ def create_app() -> FastAPI:
         openapi_url = "/openapi.json" if settings.DEBUG else None,
     )
 
-    # ── Middleware (LIFO — last added = outermost) ────────────────────────
     app.add_middleware(
         PayloadSizeLimitMiddleware,
         max_bytes=settings.max_file_size_bytes + (1024 * 1024),
@@ -253,7 +241,6 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
 
-    # ── Exception Handlers ────────────────────────────────────────────────
     @app.exception_handler(DurianServiceException)
     async def _service_exc(request, exc: DurianServiceException):
         return JSONResponse(
@@ -291,7 +278,6 @@ def create_app() -> FastAPI:
             },
         )
 
-    # ── Root ──────────────────────────────────────────────────────────────
     @app.get("/", include_in_schema=False)
     async def root():
         return {
@@ -311,7 +297,6 @@ def create_app() -> FastAPI:
             "auth_header":   "X-API-Key",
         }
 
-    # ── Routers ───────────────────────────────────────────────────────────
     app.include_router(api_router)
     app.openapi = lambda: _build_openapi_schema(app)
 

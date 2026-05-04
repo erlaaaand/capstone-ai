@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except NotImplementedError as _policy_exc:
+        import logging as _logging
+        _logging.getLogger(__name__).error(
+            f"[Startup] Gagal menerapkan WindowsProactorEventLoopPolicy: {_policy_exc}. "
+            "Playwright subprocess mungkin gagal di Windows."
+        )
+
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

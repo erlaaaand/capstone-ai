@@ -9,10 +9,8 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+
 from core.logger import get_logger
 from agents.market_intelligence.config import (
     CIRCUIT_BREAKER_CONFIG,
@@ -44,6 +42,24 @@ _BLOCKED_URL_FRAGMENTS = {
     "gtm", "analytics", "tracking", "doubleclick",
     "pixel", "clarity", "hotjar", "mixpanel", "/ads/", "/advertisement/",
 }
+
+
+def _force_proactor_policy() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        logger.debug("[Scraper] WindowsProactorEventLoopPolicy berhasil diterapkan pada thread ini.")
+    except NotImplementedError as exc:
+        logger.error(
+            f"[Scraper] Gagal menerapkan WindowsProactorEventLoopPolicy: {exc}. "
+            "Playwright subprocess mungkin tidak berfungsi di thread ini."
+        )
+    except Exception as exc:
+        logger.error(
+            f"[Scraper] Error tak terduga saat menerapkan event loop policy: {exc}.",
+            exc_info=True,
+        )
 
 
 class _CircuitBreakerState:
@@ -152,7 +168,7 @@ def _merge_json_responses(responses: List[str], source_name: str) -> str:
 
 
 async def _scrape_single_target(target: ScrapingTarget) -> ScrapedPage:
-    from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+    _force_proactor_policy()
 
     logger.info(f"[Scraper] Memulai network intercept: '{target.name}' → {target.url}")
 
@@ -251,6 +267,15 @@ async def _scrape_single_target(target: ScrapingTarget) -> ScrapedPage:
                 raw_json=placeholder_json,
             )
 
+        except NotImplementedError as exc:
+            last_error = (
+                f"NotImplementedError — event loop tidak kompatibel dengan Playwright subprocess: {str(exc)[:300]}"
+            )
+            logger.error(
+                f"[Scraper] '{target.name}' attempt={attempt}/{max_attempts}: {last_error} "
+                "Pastikan WindowsProactorEventLoopPolicy aktif di thread ini."
+            )
+
         except PlaywrightTimeout as exc:
             last_error = (
                 f"Playwright timeout setelah {target.page_timeout_ms}ms: {str(exc)[:200]}"
@@ -293,10 +318,9 @@ async def _scrape_single_target(target: ScrapingTarget) -> ScrapedPage:
 
 
 async def _scrape_with_body_capture(target: ScrapingTarget) -> ScrapedPage:
+    _force_proactor_policy()
+
     logger.info(f"[Scraper] Memulai body-capture intercept: '{target.name}' → {target.url}")
-    
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
     last_error: Optional[str] = None
     max_attempts = target.max_retries + 1
@@ -421,6 +445,15 @@ async def _scrape_with_body_capture(target: ScrapingTarget) -> ScrapedPage:
                 source_name=target.name,
                 source_url=target.url,
                 raw_json=raw_json,
+            )
+
+        except NotImplementedError as exc:
+            last_error = (
+                f"NotImplementedError — event loop tidak kompatibel dengan Playwright subprocess: {str(exc)[:300]}"
+            )
+            logger.error(
+                f"[Scraper] '{target.name}' attempt={attempt}/{max_attempts}: {last_error} "
+                "Pastikan WindowsProactorEventLoopPolicy aktif di thread ini."
             )
 
         except PlaywrightTimeout as exc:

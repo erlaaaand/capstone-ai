@@ -1,4 +1,4 @@
-from typing import Optional
+# app/core_dependencies.py
 
 from fastapi import HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader
@@ -10,23 +10,17 @@ from core.logger import get_logger
 
 logger = get_logger(__name__)
 
-API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+API_KEY_HEADER = APIKeyHeader(name="X-API-Key",      auto_error=False)
+BEARER_HEADER  = APIKeyHeader(name="Authorization",  auto_error=False)
 
-BEARER_HEADER = APIKeyHeader(name="Authorization", auto_error=False)
 
-
-def _extract_key(
-    api_key_header: Optional[str],
-    auth_header:    Optional[str],
-) -> Optional[str]:
+def _extract_key(api_key_header: str | None, auth_header: str | None) -> str | None:
     if api_key_header and api_key_header.strip():
         return api_key_header.strip()
 
     if auth_header and auth_header.strip():
         h = auth_header.strip()
-        if h.lower().startswith("bearer "):
-            return h[7:].strip()
-        return h
+        return h[7:].strip() if h.lower().startswith("bearer ") else h
 
     return None
 
@@ -35,19 +29,14 @@ def _get_client_ip(request: Request) -> str:
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
         return forwarded.split(",")[0].strip()
-    if request.client:
-        return request.client.host
-    return "unknown"
+    return request.client.host if request.client else "unknown"
 
 
 def _get_request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "unknown")
 
 
-async def _check_rate_limit(
-    request:    Request,
-    auth_result: AuthResult,
-) -> dict:
+async def _check_rate_limit(request: Request, auth_result: AuthResult) -> dict:
     limiter    = get_rate_limiter()
     manager    = get_key_manager()
     client_ip  = _get_client_ip(request)
@@ -64,20 +53,19 @@ async def _check_rate_limit(
 
     if not result.allowed:
         AuditLogger.rate_limit_exceeded(request_id, identifier, limit, client_ip)
-        headers = build_rate_limit_headers(result)
         raise HTTPException(
             status_code = status.HTTP_429_TOO_MANY_REQUESTS,
             detail      = result.reason,
-            headers     = headers,
+            headers     = build_rate_limit_headers(result),
         )
 
     return build_rate_limit_headers(result)
 
 
 async def verify_api_key(
-    request:         Request,
-    api_key_header:  Optional[str] = Security(API_KEY_HEADER),
-    auth_header:     Optional[str] = Security(BEARER_HEADER),
+    request:        Request,
+    api_key_header: str | None = Security(API_KEY_HEADER),
+    auth_header:    str | None = Security(BEARER_HEADER),
 ) -> AuthResult:
     client_ip  = _get_client_ip(request)
     request_id = _get_request_id(request)
@@ -93,8 +81,7 @@ async def verify_api_key(
             headers     = {"WWW-Authenticate": "ApiKey"},
         )
 
-    manager = get_key_manager()
-
+    manager     = get_key_manager()
     auth_result = await manager.validate_async(raw_key)
 
     if not auth_result.valid:
@@ -103,7 +90,7 @@ async def verify_api_key(
             auth_result.error,
             client_ip,
             path,
-            key_hint = raw_key[:8] + "..." if len(raw_key) >= 8 else "***",
+            key_hint=raw_key[:8] + "..." if len(raw_key) >= 8 else "***",
         )
 
         if "banyak percobaan" in auth_result.error:
@@ -120,7 +107,9 @@ async def verify_api_key(
 
     rate_headers = await _check_rate_limit(request, auth_result)
 
-    AuditLogger.auth_success(request_id, auth_result.key_prefix, auth_result.key_name, client_ip, path)
+    AuditLogger.auth_success(
+        request_id, auth_result.key_prefix, auth_result.key_name, client_ip, path
+    )
 
     if auth_result.deprecated:
         AuditLogger.deprecated_key_used(request_id, auth_result.key_prefix, client_ip)
@@ -137,18 +126,18 @@ def require_scope(required_scope: KeyScope):
         auth:    AuthResult = Security(verify_api_key),
     ) -> AuthResult:
         if required_scope not in auth.scopes:
-            client_ip  = _get_client_ip(request)
-            request_id = _get_request_id(request)
             logger.warning(
-                f"[{request_id}] Scope tidak cukup: butuh={required_scope.value} "
+                f"[{_get_request_id(request)}] Scope tidak cukup: "
+                f"butuh={required_scope.value} "
                 f"| punya={[s.value for s in auth.scopes]} "
-                f"| key={auth.key_prefix} | ip={client_ip}"
+                f"| key={auth.key_prefix} "
+                f"| ip={_get_client_ip(request)}"
             )
             raise HTTPException(
                 status_code = status.HTTP_403_FORBIDDEN,
                 detail      = (
                     f"API key ini tidak punya akses scope '{required_scope.value}'. "
-                    f"Hubungi administrator untuk upgrade key."
+                    "Hubungi administrator untuk upgrade key."
                 ),
             )
         return auth

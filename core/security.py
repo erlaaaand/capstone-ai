@@ -35,7 +35,7 @@ class RateLimitTier(str, Enum):
 TIER_LIMITS: Dict[RateLimitTier, int] = {
     RateLimitTier.FREE:      60,
     RateLimitTier.STANDARD:  300,
-    RateLimitTier.PREMIUM:   1000,
+    RateLimitTier.PREMIUM:   1_000,
     RateLimitTier.UNLIMITED: 999_999,
 }
 
@@ -54,6 +54,7 @@ class _FailRecord:
 
 
 class _PBKDF2GuardState:
+    """Melindungi endpoint auth dari serangan brute-force PBKDF2."""
 
     def __init__(self) -> None:
         self._lock    = threading.Lock()
@@ -62,16 +63,12 @@ class _PBKDF2GuardState:
     def is_locked(self, prefix: str) -> bool:
         with self._lock:
             rec = self._records.get(prefix)
-            if rec is None:
-                return False
-            if rec.locked_until and time.time() < rec.locked_until:
-                return True
-            return False
+            return bool(rec and rec.locked_until and time.time() < rec.locked_until)
 
     def record_failure(self, prefix: str) -> None:
         now = time.time()
         with self._lock:
-            rec = self._records.setdefault(prefix, _FailRecord())
+            rec    = self._records.setdefault(prefix, _FailRecord())
             cutoff = now - _PBKDF2_FAIL_WINDOW
             rec.timestamps = [t for t in rec.timestamps if t >= cutoff]
             rec.timestamps.append(now)
@@ -115,16 +112,18 @@ class AuthResult:
 
 
 def _get_pbkdf2_iterations() -> int:
+    """
+    Baca iterasi PBKDF2 dari settings.
+    Fallback ke nilai OWASP-safe (600k) selama fase bootstrap.
+    """
     try:
         from core.config import settings
         return settings.PBKDF2_ITERATIONS
     except Exception:
-        # Fallback aman saat bootstrap — tidak pernah turun di bawah minimum OWASP.
         return 600_000
 
 
 def _hash_key(raw_key: str, salt: Optional[str] = None) -> tuple[str, str]:
-
     iterations = _get_pbkdf2_iterations()
 
     if salt is None:
@@ -147,45 +146,48 @@ def _hash_key(raw_key: str, salt: Optional[str] = None) -> tuple[str, str]:
 def _verify_key(raw_key: str, stored_hash: str) -> bool:
     try:
         salt_hex, expected_hash = stored_hash.split(":", 1)
-        computed_hash, _ = _hash_key(raw_key, salt=salt_hex)
+        computed_hash, _        = _hash_key(raw_key, salt=salt_hex)
         return hmac.compare_digest(
             computed_hash.encode("ascii"),
             expected_hash.encode("ascii"),
         )
-    except (ValueError, Exception):
+    except Exception:
         return False
 
 
+# ── Public key-management utilities ───────────────────────────────────────────
+
 def hash_api_key(raw_key: str) -> str:
+    """Hash API key untuk disimpan di env/database. Gunakan saat provisioning key baru."""
     dk, salt = _hash_key(raw_key)
     return f"{salt}:{dk}"
 
 
 def generate_api_key(live: bool = True) -> str:
+    """Generate API key baru. Gunakan saat provisioning key baru."""
     prefix = KEY_PREFIX_LIVE if live else KEY_PREFIX_TEST
     return f"{prefix}{secrets.token_urlsafe(24)}"
 
 
 def get_key_prefix(raw_key: str) -> str:
+    """Ambil 12 karakter pertama key sebagai identifier aman untuk logging."""
     if len(raw_key) <= 12:
         return raw_key[:4] + "..."
     return raw_key[:12] + "..."
 
 
+# ── APIKeyManager ──────────────────────────────────────────────────────────────
+
 class APIKeyManager:
     _singleton_lock: threading.Lock            = threading.Lock()
     _instance:       Optional["APIKeyManager"] = None
-
-    _keys:      Dict[str, List[APIKeyRecord]]
-    _loaded:    bool
-    _load_lock: threading.RLock
 
     def __new__(cls) -> "APIKeyManager":
         if cls._instance is not None:
             return cls._instance
         with cls._singleton_lock:
             if cls._instance is None:
-                inst = super().__new__(cls)
+                inst            = super().__new__(cls)
                 inst._keys      = {}
                 inst._loaded    = False
                 inst._load_lock = threading.RLock()
@@ -204,13 +206,14 @@ class APIKeyManager:
                 if not raw_key:
                     continue
 
-                name       = os.getenv(f"API_KEY_{i}_NAME",   f"Key #{i}")
-                scopes     = self._parse_scopes(os.getenv(f"API_KEY_{i}_SCOPES", "predict,health"))
-                tier       = self._parse_tier(os.getenv(f"API_KEY_{i}_TIER", "standard"))
-                expiry     = self._parse_expiry(os.getenv(f"API_KEY_{i}_EXPIRES_AT"))
-                deprecated = os.getenv(f"API_KEY_{i}_DEPRECATED", "false").lower() == "true"
-
-                self._register_key(raw_key, name, scopes, tier, expiry, deprecated)
+                self._register_key(
+                    raw_key    = raw_key,
+                    name       = os.getenv(f"API_KEY_{i}_NAME",   f"Key #{i}"),
+                    scopes     = self._parse_scopes(os.getenv(f"API_KEY_{i}_SCOPES", "predict,health")),
+                    tier       = self._parse_tier(os.getenv(f"API_KEY_{i}_TIER", "standard")),
+                    expires_at = self._parse_expiry(os.getenv(f"API_KEY_{i}_EXPIRES_AT")),
+                    deprecated = os.getenv(f"API_KEY_{i}_DEPRECATED", "false").lower() == "true",
+                )
                 loaded_count += 1
 
             if loaded_count == 0:
@@ -274,10 +277,7 @@ class APIKeyManager:
         )
 
     def loaded_key_count(self) -> int:
-        """
-        [FIX BUG #11] Public method untuk mendapatkan jumlah key yang ter-load.
-        Menggantikan akses langsung ke atribut private `_keys` dari luar kelas.
-        """
+        """Jumlah total API key yang ter-load (semua bucket)."""
         with self._load_lock:
             return sum(len(bucket) for bucket in self._keys.values())
 
@@ -296,9 +296,9 @@ class APIKeyManager:
                 f"prefix={key_prefix!r}"
             )
             return AuthResult(
-                valid=False,
-                error="Terlalu banyak percobaan autentikasi gagal. Coba lagi nanti.",
-                key_prefix=key_prefix,
+                valid      = False,
+                error      = "Terlalu banyak percobaan autentikasi gagal. Coba lagi nanti.",
+                key_prefix = key_prefix,
             )
 
         with self._load_lock:
@@ -308,10 +308,8 @@ class APIKeyManager:
 
     async def validate_async(self, raw_key: str) -> AuthResult:
         """
-        [FIX BUG #12] Verifikasi PBKDF2 (CPU-bound) dijalankan di thread pool
-        menggunakan asyncio.to_thread sehingga tidak memblokir event loop.
-        Implementasi sebelumnya memanggil self.validate() secara langsung
-        yang tetap memblokir event loop karena tidak di-await dengan benar.
+        Verifikasi PBKDF2 (CPU-bound) dijalankan di thread pool agar tidak
+        memblokir event loop.
         """
         if not self._loaded:
             await asyncio.to_thread(self.load_keys)
@@ -327,9 +325,9 @@ class APIKeyManager:
                 f"prefix={key_prefix!r}"
             )
             return AuthResult(
-                valid=False,
-                error="Terlalu banyak percobaan autentikasi gagal. Coba lagi nanti.",
-                key_prefix=key_prefix,
+                valid      = False,
+                error      = "Terlalu banyak percobaan autentikasi gagal. Coba lagi nanti.",
+                key_prefix = key_prefix,
             )
 
         with self._load_lock:
@@ -338,7 +336,6 @@ class APIKeyManager:
         if not candidates:
             return AuthResult(valid=False, error="API key tidak valid.", key_prefix=key_prefix)
 
-        # Jalankan verifikasi PBKDF2 di thread pool — tidak memblokir event loop.
         return await asyncio.to_thread(
             self._verify_candidates, raw_key, key_prefix, candidates
         )
@@ -361,17 +358,17 @@ class APIKeyManager:
         if not record.active:
             logger.warning(f"Key nonaktif digunakan: {record.key_prefix}")
             return AuthResult(
-                valid=False,
-                error="API key tidak aktif.",
-                key_prefix=record.key_prefix,
+                valid      = False,
+                error      = "API key tidak aktif.",
+                key_prefix = record.key_prefix,
             )
 
         if record.expires_at and time.time() > record.expires_at:
             logger.warning(f"Key kadaluarsa digunakan: {record.key_prefix}")
             return AuthResult(
-                valid=False,
-                error="API key sudah kadaluarsa.",
-                key_prefix=record.key_prefix,
+                valid      = False,
+                error      = "API key sudah kadaluarsa.",
+                key_prefix = record.key_prefix,
             )
 
         if record.deprecated:
@@ -396,12 +393,11 @@ class APIKeyManager:
     def _parse_scopes(scope_str: str) -> Set[KeyScope]:
         scopes = set()
         for s in scope_str.split(","):
-            s = s.strip().lower()
             try:
-                scopes.add(KeyScope(s))
+                scopes.add(KeyScope(s.strip().lower()))
             except ValueError:
                 logger.warning(f"Scope tidak dikenal: '{s}', diabaikan.")
-        return scopes if scopes else {KeyScope.PREDICT}
+        return scopes or {KeyScope.PREDICT}
 
     @staticmethod
     def _parse_tier(tier_str: str) -> RateLimitTier:

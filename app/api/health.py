@@ -40,7 +40,7 @@ async def ping():
     summary        = "Detailed Health Check (Protected)",
     description    = (
         "Status detail service termasuk model, memory, rate limiter, "
-        "dan status data Market Intelligence.\n\n"
+        "dan konfigurasi.\n\n"
         "**Memerlukan API key.**"
     ),
     tags = ["System"],

@@ -22,19 +22,6 @@ class VarietyScore(BaseModel):
     confidence_score: float = Field(..., ge=0.0, le=1.0, examples=[0.9231])
 
 
-class MarketContextResponse(BaseModel):
-    variety_code:  str      = Field(..., description="Kode varietas yang sama dengan prediksi.")
-    price_min_idr: int      = Field(..., ge=0, description="Harga minimum per kg (IDR), dari data pasar terbaru.")
-    price_max_idr: int      = Field(..., ge=0, description="Harga maksimum per kg (IDR).")
-    price_avg_idr: int      = Field(..., ge=0, description="Harga rata-rata per kg (IDR).")
-    sample_count:  int      = Field(..., ge=0, description="Jumlah listing yang menjadi basis harga.")
-    scraped_at:    datetime = Field(..., description="Waktu data harga diambil.")
-    data_is_stale: bool     = Field(
-        default=False,
-        description="True jika data lebih dari 25 jam. Gunakan sebagai sinyal di UI.",
-    )
-
-
 class PredictionResponse(BaseModel):
     success:    bool             = Field(default=True)
     prediction: PredictionResult = Field(..., description="Prediksi varietas teratas.")
@@ -54,14 +41,6 @@ class PredictionResponse(BaseModel):
     model_version:         Optional[str] = Field(default=None)
     request_id:            Optional[str] = Field(default=None)
 
-    market_context: Optional[MarketContextResponse] = Field(
-        default=None,
-        description=(
-            "Ringkasan harga pasar terkini untuk varietas yang terdeteksi. "
-            "None jika belum ada data dari Market Intelligence Agent."
-        ),
-    )
-
 
 class HealthResponse(BaseModel):
     status:       str  = Field(..., examples=["healthy"])
@@ -74,19 +53,6 @@ class HealthResponse(BaseModel):
     rate_limiter_stats: Optional[Dict[str, Any]] = Field(default=None)
     config_summary:     Optional[Dict[str, Any]] = Field(default=None)
 
-    market_data_available: bool     = Field(
-        default=False,
-        description="True jika MarketDataStore memiliki data dari minimal satu run agent.",
-    )
-    market_data_stale:     bool     = Field(
-        default=True,
-        description="True jika data market lebih dari 25 jam atau belum ada.",
-    )
-    market_next_run:       Optional[str] = Field(
-        default=None,
-        description="ISO-8601 timestamp jadwal run agent berikutnya, atau None jika tidak aktif.",
-    )
-
 
 class VarietyPriceSummary(BaseModel):
     variety_code:  str      = Field(..., examples=["D197"])
@@ -96,37 +62,6 @@ class VarietyPriceSummary(BaseModel):
     price_avg_idr: int      = Field(..., ge=0, description="IDR per kg")
     sample_count:  int      = Field(..., ge=0, description="Jumlah listing sumber")
     scraped_at:    datetime = Field(...)
-
-
-class MarketPricesResponse(BaseModel):
-    success:    bool                      = Field(default=True)
-    data_fresh: bool                      = Field(
-        ...,
-        description="False jika data lebih dari 25 jam — tampilkan warning di UI.",
-    )
-    scraped_at:    Optional[datetime]         = Field(default=None, description="Waktu data terakhir diambil.")
-    prices:        List[VarietyPriceSummary]  = Field(default_factory=list)
-    variety_count: int                        = Field(default=0, ge=0, description="Jumlah varietas dengan data harga.")
-
-
-class MarketReportResponse(BaseModel):
-    success:           bool                     = Field(default=True)
-    run_id:            Optional[str]            = Field(default=None)
-    agent_version:     Optional[str]            = Field(default=None)
-    status:            Optional[str]            = Field(default=None, description="AgentRunStatus value.")
-    run_started_at:    Optional[datetime]       = Field(default=None)
-    run_ended_at:      Optional[datetime]       = Field(default=None)
-    sources_scraped:   int                      = Field(default=0, ge=0)
-    sources_failed:    int                      = Field(default=0, ge=0)
-    entry_count:       int                      = Field(default=0, ge=0)
-    entries_discarded: int                      = Field(default=0, ge=0)
-    llm_parse_errors:  int                      = Field(default=0, ge=0)
-    data_fresh:        bool                     = Field(default=False)
-    error_details:     Optional[str]            = Field(default=None)
-    entries: Optional[List[Dict[str, Any]]] = Field(
-        default=None,
-        description="Daftar lengkap MarketPriceEntry. Hanya ada jika ?include_entries=true.",
-    )
 
 
 class ErrorResponse(BaseModel):

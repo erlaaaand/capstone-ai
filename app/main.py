@@ -148,19 +148,12 @@ def _build_openapi_schema(app: FastAPI) -> dict:
         title       = settings.APP_NAME,
         version     = settings.APP_VERSION,
         description = (
-            "## Durian Authenticity & Market Intelligence API\n\n"
-            "API untuk dua fitur utama aplikasi konsumen:\n\n"
+            "## Durian Authenticity API\n\n"
+            "API untuk fitur utama aplikasi konsumen:\n\n"
             "### 1. Klasifikasi Varietas Durian\n"
             "Validasi keaslian varietas durian dari gambar menggunakan "
             "EfficientNetB0 deep learning model.\n\n"
             "**Endpoint:** `POST /api/v1/predict`\n\n"
-            "### 2. Informasi Harga Pasar\n"
-            "Data harga durian premium (IDR/kg) dari marketplace Indonesia, "
-            "diperbarui otomatis setiap hari oleh Market Intelligence Agent.\n\n"
-            "**Endpoint:** `GET /api/v1/market/prices`\n\n"
-            "**Endpoint:** `GET /api/v1/market/report`\n\n"
-            "**Endpoint:** `GET /api/v1/market/diagnostics` *(Admin)*\n\n"
-            "### Autentikasi\n"
             "Semua endpoint (kecuali `/ping`) memerlukan API key yang valid.\n\n"
             "**Header:** `X-API-Key: dk_live_your_key_here`\n\n"
             "**Alternatif:** `Authorization: Bearer dk_live_your_key_here`\n\n"
@@ -203,7 +196,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title       = settings.APP_NAME,
         version     = settings.APP_VERSION,
-        description = "Durian Authenticity & Market Intelligence API",
+        description = "Durian Authenticity API",
         lifespan    = lifespan,
         docs_url    = "/docs"         if settings.DEBUG else None,
         redoc_url   = "/redoc"        if settings.DEBUG else None,
@@ -282,9 +275,6 @@ def create_app() -> FastAPI:
             "docs":          "/docs" if settings.DEBUG else "disabled (production)",
             "endpoints": {
                 "predict":            "POST /api/v1/predict",
-                "market_prices":      "GET /api/v1/market/prices",
-                "market_report":      "GET /api/v1/market/report",
-                "market_diagnostics": "GET /api/v1/market/diagnostics",
                 "health":             "GET /api/v1/health",
                 "ping":               "GET /api/v1/ping",
             },

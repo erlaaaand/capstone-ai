@@ -21,7 +21,7 @@ from core.logger import get_logger
 from core.middleware import AuditLogger
 from core.security import KeyScope
 from schemas.request import PredictionRequestBase64
-from schemas.response import MarketContextResponse, PredictionResponse, VarietyScore
+from schemas.response import PredictionResponse, VarietyScore
 from services.image_processor import ImageProcessor
 from services.inference_service import InferenceService
 from services.clip_service import CLIPService

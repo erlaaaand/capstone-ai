@@ -28,3 +28,7 @@ __pycache__/
 /pipelines
 
 *.html
+
+check_specs.py
+
+*.txt

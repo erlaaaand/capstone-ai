@@ -3,51 +3,22 @@
 import base64
 import io
 import threading
-from typing import Optional, Union
+from typing import Union
 
 from PIL import Image
 
+from core.clip_labels import DURIAN_LABEL_INDEX, LABEL_NAMES, LABEL_PROMPTS
 from core.config import settings
 from core.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Kunci: prompt teks (Inggris) | Nilai: label tampil (Indonesia)
-_LABELS: dict[str, str] = {
-    "a raw, unedited, high-quality photograph of a real durian fruit, "
-    "distinctly showing its sharp natural green-brown thorns or fresh yellow fleshy pods inside.":
-        "Durian Asli",
-    "a digital illustration, 3d render, vector graphic, cartoon, anime, "
-    "painting, sketch, drawing, or ai-generated synthetic art of a fruit.":
-        "Ilustrasi / Render 3D",
-    "a digital screenshot, meme, promotional flyer, poster, graphic design, "
-    "or an image containing visible text, words, icons, and UI elements.":
-        "Tangkapan Layar / Teks",
-    "a photograph prominently featuring a human face, a person, crowds, "
-    "or visible human hands holding, opening, or interacting with objects.":
-        "Manusia / Anggota Tubuh",
-    "a photograph of cooked meals, yellow rice, curry, plated dishes on banana leaves, "
-    "or durian-flavored desserts, ice cream, pastries, and cakes.":
-        "Makanan Olahan / Hidangan",
-    "a photograph of similar rough green fruits like jackfruit, breadfruit, or soursop, "
-    "or just a random pile of green leaves, grass, tree branches, and plants.":
-        "Buah Lain / Dedaunan",
-    "a photograph of furry animals, pets, or spiky animals like hedgehogs or porcupines.":
-        "Hewan",
-    "a general photograph of everyday household items, electronics, indoor furniture, "
-    "vehicles, buildings, or landscape scenery without a clear main subject.":
-        "Objek Acak / Pemandangan",
-}
-
-_LABEL_PROMPTS: list[str] = list(_LABELS.keys())
-_LABEL_NAMES:   list[str] = list(_LABELS.values())
-
 
 class CLIPService:
-    _model:           object          = None
-    _processor:       object          = None
-    _lock:            threading.Lock  = threading.Lock()
-    _load_attempted:  bool            = False
+    _model:          object         = None
+    _processor:      object         = None
+    _lock:           threading.Lock = threading.Lock()
+    _load_attempted: bool           = False
 
     @classmethod
     def _ensure_loaded(cls) -> bool:
@@ -60,7 +31,6 @@ class CLIPService:
                 return cls._model is not None
 
             cls._load_attempted = True
-
             model_id = settings.CLIP_MODEL_ID
             revision = settings.clip_revision
 
@@ -72,14 +42,8 @@ class CLIPService:
             try:
                 from transformers import CLIPModel, CLIPProcessor
 
-                cls._model = CLIPModel.from_pretrained(
-                    model_id,
-                    revision=revision,
-                )
-                cls._processor = CLIPProcessor.from_pretrained(
-                    model_id,
-                    revision=revision,
-                )
+                cls._model = CLIPModel.from_pretrained(model_id, revision=revision)
+                cls._processor = CLIPProcessor.from_pretrained(model_id, revision=revision)
                 cls._model.eval()
 
                 logger.info(
@@ -104,7 +68,6 @@ class CLIPService:
 
     @staticmethod
     def is_durian(raw_input: Union[bytes, str]) -> bool:
-
         if not CLIPService._ensure_loaded():
             logger.warning(
                 "[CLIPService] Model tidak tersedia — gambar diizinkan tanpa validasi CLIP."
@@ -120,7 +83,7 @@ class CLIPService:
             image       = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
             inputs = CLIPService._processor(
-                text           = _LABEL_PROMPTS,
+                text           = LABEL_PROMPTS,
                 images         = image,
                 return_tensors = "pt",
                 padding        = True,
@@ -133,11 +96,10 @@ class CLIPService:
             best_idx   = int(probs.argmax())
             best_score = float(probs[best_idx])
 
-            # Index 0 = "Durian Asli" — jika label lain menang dengan confidence tinggi → tolak.
-            if best_idx != 0 and best_score > non_durian_threshold:
+            if best_idx != DURIAN_LABEL_INDEX and best_score > non_durian_threshold:
                 logger.warning(
                     f"[CLIPService] Bukan durian — terdeteksi sebagai "
-                    f"'{_LABEL_NAMES[best_idx]}' (confidence={best_score:.2f})"
+                    f"'{LABEL_NAMES[best_idx]}' (confidence={best_score:.2f})"
                 )
                 return False
 

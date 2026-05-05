@@ -1,4 +1,6 @@
 # core/brute_force.py
+# Single source of truth untuk PBKDF2 brute-force guard.
+# Digunakan oleh core/security.py — jangan mendefinisikan ulang di tempat lain.
 
 import threading
 import time
@@ -21,6 +23,7 @@ class _FailRecord:
 
 
 class PBKDF2GuardState:
+    """Thread-safe guard terhadap serangan brute-force pada endpoint autentikasi PBKDF2."""
 
     def __init__(self) -> None:
         self._lock    = threading.Lock()
@@ -50,4 +53,5 @@ class PBKDF2GuardState:
             self._records.pop(prefix, None)
 
 
+# Singleton instance — import dan gunakan langsung.
 pbkdf2_guard = PBKDF2GuardState()

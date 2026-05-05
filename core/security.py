@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Set
 
 from dotenv import load_dotenv
 
+from core.brute_force import PBKDF2GuardState, pbkdf2_guard  # noqa: F401 (re-export)
 from core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -41,50 +42,6 @@ TIER_LIMITS: Dict[RateLimitTier, int] = {
 
 KEY_PREFIX_LIVE = "dk_live_"
 KEY_PREFIX_TEST = "dk_test_"
-
-_PBKDF2_FAIL_WINDOW = 60
-_PBKDF2_FAIL_MAX    = 10
-_PBKDF2_LOCKOUT_SEC = 30
-
-
-@dataclass
-class _FailRecord:
-    timestamps:   List[float] = field(default_factory=list)
-    locked_until: float       = 0.0
-
-
-class _PBKDF2GuardState:
-    """Melindungi endpoint auth dari serangan brute-force PBKDF2."""
-
-    def __init__(self) -> None:
-        self._lock    = threading.Lock()
-        self._records: Dict[str, _FailRecord] = {}
-
-    def is_locked(self, prefix: str) -> bool:
-        with self._lock:
-            rec = self._records.get(prefix)
-            return bool(rec and rec.locked_until and time.time() < rec.locked_until)
-
-    def record_failure(self, prefix: str) -> None:
-        now = time.time()
-        with self._lock:
-            rec    = self._records.setdefault(prefix, _FailRecord())
-            cutoff = now - _PBKDF2_FAIL_WINDOW
-            rec.timestamps = [t for t in rec.timestamps if t >= cutoff]
-            rec.timestamps.append(now)
-            if len(rec.timestamps) >= _PBKDF2_FAIL_MAX:
-                rec.locked_until = now + _PBKDF2_LOCKOUT_SEC
-                logger.warning(
-                    f"[Security] PBKDF2 brute-force guard activated for "
-                    f"prefix={prefix!r} — locked {_PBKDF2_LOCKOUT_SEC}s."
-                )
-
-    def record_success(self, prefix: str) -> None:
-        with self._lock:
-            self._records.pop(prefix, None)
-
-
-_pbkdf2_guard = _PBKDF2GuardState()
 
 
 @dataclass
@@ -290,7 +247,7 @@ class APIKeyManager:
 
         key_prefix = get_key_prefix(raw_key)
 
-        if _pbkdf2_guard.is_locked(key_prefix):
+        if pbkdf2_guard.is_locked(key_prefix):
             logger.warning(
                 f"[Security] Request ditolak karena prefix terkunci (brute-force): "
                 f"prefix={key_prefix!r}"
@@ -319,7 +276,7 @@ class APIKeyManager:
 
         key_prefix = get_key_prefix(raw_key)
 
-        if _pbkdf2_guard.is_locked(key_prefix):
+        if pbkdf2_guard.is_locked(key_prefix):
             logger.warning(
                 f"[Security] Request ditolak karena prefix terkunci (brute-force): "
                 f"prefix={key_prefix!r}"
@@ -348,10 +305,10 @@ class APIKeyManager:
     ) -> AuthResult:
         for record in candidates:
             if _verify_key(raw_key, record.key_hash):
-                _pbkdf2_guard.record_success(key_prefix)
+                pbkdf2_guard.record_success(key_prefix)
                 return self._build_auth_result(record)
 
-        _pbkdf2_guard.record_failure(key_prefix)
+        pbkdf2_guard.record_failure(key_prefix)
         return AuthResult(valid=False, error="API key tidak valid.", key_prefix=key_prefix)
 
     def _build_auth_result(self, record: APIKeyRecord) -> AuthResult:

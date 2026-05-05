@@ -1,4 +1,6 @@
 # core/varieties.py
+# Single source of truth untuk data varietas durian.
+# Import dari sini — JANGAN mendefinisikan ulang di core/config.py.
 
 from typing import Dict, NamedTuple, Optional
 
@@ -76,9 +78,11 @@ _UNKNOWN_VARIETY = VarietyInfo(
 
 
 def get_variety_info(code: str) -> VarietyInfo:
+    """Kembalikan VarietyInfo untuk kode varietas. Fallback ke _UNKNOWN_VARIETY jika tidak ada."""
     return VARIETY_MAP.get(code.strip().upper(), _UNKNOWN_VARIETY)
 
 
 def get_display_name(code: str) -> str:
+    """Kembalikan display name untuk kode varietas. Fallback ke kode itu sendiri."""
     info = VARIETY_MAP.get(code.strip().upper())
     return info.display_name if info else code

@@ -2,6 +2,7 @@
 
 from core.config import settings, get_settings
 from core.logger import logger, get_logger, setup_logging
+from core.audit import AuditLogger
 from core.exceptions import (
     DurianServiceException,
     ModelNotLoadedException,
@@ -28,6 +29,8 @@ __all__ = [
     "logger",
     "get_logger",
     "setup_logging",
+    # Audit
+    "AuditLogger",
     # Exceptions
     "DurianServiceException",
     "ModelNotLoadedException",

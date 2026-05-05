@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     CLIP_MODEL_ID:             str   = "openai/clip-vit-base-patch32"
     CLIP_REVISION_HASH:        str   = ""
     CLIP_NON_DURIAN_THRESHOLD: float = 0.40
+    # Minimum confidence untuk label Durian agar lolos validasi CLIP.
+    # Cegah gambar dengan semua confidence rendah (misal 13% durian) tetap lolos.
+    CLIP_DURIAN_MIN_CONFIDENCE: float = 0.20
 
     # ── Security ──────────────────────────────────────────────────────────
     PBKDF2_ITERATIONS: int = 600_000
@@ -104,12 +107,12 @@ class Settings(BaseSettings):
             )
         return v
 
-    @field_validator("CLIP_NON_DURIAN_THRESHOLD")
+    @field_validator("CLIP_NON_DURIAN_THRESHOLD", "CLIP_DURIAN_MIN_CONFIDENCE")
     @classmethod
-    def validate_clip_threshold(cls, v: float) -> float:
+    def validate_clip_thresholds(cls, v: float) -> float:
         if not 0.0 < v < 1.0:
             raise ValueError(
-                "CLIP_NON_DURIAN_THRESHOLD harus antara 0.0 dan 1.0 (exclusive)."
+                "CLIP threshold harus antara 0.0 dan 1.0 (exclusive)."
             )
         return v
 
@@ -170,14 +173,9 @@ class Settings(BaseSettings):
         return [h.strip() for h in self.ALLOWED_HOSTS_STR.split(",") if h.strip()]
 
     @property
-    def variety_map(self) -> Dict[str, VarietyInfo]:
-        return VARIETY_MAP
-
-    @property
     def clip_revision(self) -> Optional[str]:
         rev = self.CLIP_REVISION_HASH.strip()
         return rev if rev else None
-
 
 @lru_cache()
 def get_settings() -> Settings:
@@ -185,8 +183,8 @@ def get_settings() -> Settings:
 
 
 def reload_settings() -> Settings:
+
     get_settings.cache_clear()
     return get_settings()
-
 
 settings: Settings = get_settings()

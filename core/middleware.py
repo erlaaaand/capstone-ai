@@ -1,14 +1,22 @@
+# core/middleware.py
+# ASGI middleware: SecurityHeaders, RequestLogging, PayloadSizeLimit.
+# AuditLogger telah dipindah ke core/audit.py.
+# Re-export di bawah untuk backward-compatibility.
+
 import time
 import uuid
 from typing import Awaitable, Callable
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import Response
 from starlette.types import ASGIApp
 
 from core.config import settings
 from core.logger import get_logger
+
+# Re-export — kode lama yang import dari sini tidak perlu diubah.
+from core.audit import AuditLogger  # noqa: F401
 
 logger = get_logger(__name__)
 
@@ -76,7 +84,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         client_ip  = self._get_client_ip(request)
-        user_agent = (request.headers.get("user-agent", "")[:100])
+        user_agent = request.headers.get("user-agent", "")[:100]
         start_time = time.perf_counter()
 
         logger.info(
@@ -123,7 +131,7 @@ class PayloadSizeLimitMiddleware:
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] == "http":
-            headers = dict(scope.get("headers", []))
+            headers            = dict(scope.get("headers", []))
             content_length_raw = headers.get(b"content-length")
 
             if content_length_raw:
@@ -136,7 +144,7 @@ class PayloadSizeLimitMiddleware:
                             f'"detail":"Payload melebihi batas {max_mb:.0f}MB."}}'
                         ).encode()
                         response = Response(
-                            content     = body,
+                            content    = body,
                             status_code = 413,
                             media_type  = "application/json",
                         )
@@ -146,74 +154,3 @@ class PayloadSizeLimitMiddleware:
                     pass
 
         await self.app(scope, receive, send)
-
-
-class AuditLogger:
-
-    _audit_logger = get_logger("audit")
-
-    @classmethod
-    def auth_success(
-        cls,
-        request_id: str,
-        key_prefix: str,
-        key_name:   str,
-        client_ip:  str,
-        path:       str,
-    ) -> None:
-        cls._audit_logger.info(
-            f"AUTH_SUCCESS | req={request_id} | key={key_prefix} "
-            f"| name='{key_name}' | ip={client_ip} | path={path}"
-        )
-
-    @classmethod
-    def auth_failure(
-        cls,
-        request_id: str,
-        reason:     str,
-        client_ip:  str,
-        path:       str,
-        key_hint:   str = "",
-    ) -> None:
-        cls._audit_logger.warning(
-            f"AUTH_FAILURE | req={request_id} | reason='{reason}' "
-            f"| key_hint={key_hint} | ip={client_ip} | path={path}"
-        )
-
-    @classmethod
-    def rate_limit_exceeded(
-        cls,
-        request_id:  str,
-        identifier:  str,
-        limit:       int,
-        client_ip:   str,
-    ) -> None:
-        cls._audit_logger.warning(
-            f"RATE_LIMIT_EXCEEDED | req={request_id} | id={identifier} "
-            f"| limit={limit}/min | ip={client_ip}"
-        )
-
-    @classmethod
-    def suspicious_file(
-        cls,
-        request_id: str,
-        reason:     str,
-        filename:   str,
-        client_ip:  str,
-    ) -> None:
-        cls._audit_logger.warning(
-            f"SUSPICIOUS_FILE | req={request_id} | reason='{reason}' "
-            f"| file='{filename}' | ip={client_ip}"
-        )
-
-    @classmethod
-    def deprecated_key_used(
-        cls,
-        request_id: str,
-        key_prefix: str,
-        client_ip:  str,
-    ) -> None:
-        cls._audit_logger.warning(
-            f"DEPRECATED_KEY | req={request_id} | key={key_prefix} "
-            f"| ip={client_ip} | action=ROTATE_KEY_IMMEDIATELY"
-        )

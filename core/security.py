@@ -13,10 +13,13 @@ from typing import Dict, List, Optional, Set
 
 from dotenv import load_dotenv
 
-from core.brute_force import PBKDF2GuardState, pbkdf2_guard  # noqa: F401 (re-export)
+from core.brute_force import pbkdf2_guard  # FIX #7: hanya import instance, bukan class
 from core.logger import get_logger
 
 logger = get_logger(__name__)
+
+# FIX #6: ganti range(1, 20) magic number dengan konstanta eksplisit
+MAX_API_KEYS = 20  # support API_KEY_1 sampai API_KEY_20
 
 
 class KeyScope(str, Enum):
@@ -158,7 +161,8 @@ class APIKeyManager:
             self._keys   = {}
             loaded_count = 0
 
-            for i in range(1, 20):
+            # FIX #6: gunakan konstanta MAX_API_KEYS, bukan magic number range(1, 20)
+            for i in range(1, MAX_API_KEYS + 1):
                 raw_key = os.getenv(f"API_KEY_{i}")
                 if not raw_key:
                     continue
@@ -260,6 +264,9 @@ class APIKeyManager:
 
         with self._load_lock:
             candidates = list(self._keys.get(key_prefix, []))
+
+        if not candidates:
+            return AuthResult(valid=False, error="API key tidak valid.", key_prefix=key_prefix)
 
         return self._verify_candidates(raw_key, key_prefix, candidates)
 

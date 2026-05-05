@@ -42,7 +42,7 @@ class CLIPService:
             try:
                 from transformers import CLIPModel, CLIPProcessor
 
-                cls._model = CLIPModel.from_pretrained(model_id, revision=revision)
+                cls._model     = CLIPModel.from_pretrained(model_id, revision=revision)
                 cls._processor = CLIPProcessor.from_pretrained(model_id, revision=revision)
                 cls._model.eval()
 
@@ -75,6 +75,9 @@ class CLIPService:
             return True
 
         non_durian_threshold = settings.CLIP_NON_DURIAN_THRESHOLD
+        # FIX #15: ambil min confidence dari settings (default 0.20).
+        # Cegah gambar ambigu (semua label confidence rendah) lolos tanpa syarat.
+        durian_min_confidence = settings.CLIP_DURIAN_MIN_CONFIDENCE
 
         try:
             import torch
@@ -95,11 +98,22 @@ class CLIPService:
             probs      = outputs.logits_per_image.softmax(dim=1).cpu().numpy()[0]
             best_idx   = int(probs.argmax())
             best_score = float(probs[best_idx])
+            durian_score = float(probs[DURIAN_LABEL_INDEX])
 
+            # Kasus 1: label lain menang dengan confidence tinggi → tolak
             if best_idx != DURIAN_LABEL_INDEX and best_score > non_durian_threshold:
                 logger.warning(
                     f"[CLIPService] Bukan durian — terdeteksi sebagai "
                     f"'{LABEL_NAMES[best_idx]}' (confidence={best_score:.2f})"
+                )
+                return False
+
+            # FIX #15 — Kasus 2: label durian menang tapi confidence-nya terlalu rendah
+            # (misal: gambar kabur / ambigu yang semua labelnya rendah) → tolak
+            if durian_score < durian_min_confidence:
+                logger.warning(
+                    f"[CLIPService] Confidence durian terlalu rendah "
+                    f"(score={durian_score:.2f} < min={durian_min_confidence:.2f}) — ditolak."
                 )
                 return False
 

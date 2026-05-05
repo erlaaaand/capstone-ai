@@ -1,3 +1,5 @@
+# app/main.py
+
 from __future__ import annotations
 
 import asyncio
@@ -64,26 +66,42 @@ async def _start_rate_limiter() -> None:
     await get_rate_limiter().start_cleanup_task()
     logger.info("[Startup] Rate limiter cleanup task aktif.")
 
+
 async def _stop_rate_limiter() -> None:
     await get_rate_limiter().stop_cleanup_task()
 
 
-def _safe_startup(label: str, fn) -> None:
+def _critical_startup(label: str, fn) -> None:
     logger.info(f"[Startup] {label}...")
     try:
         fn()
     except Exception as e:
-        logger.critical(f"[Startup] Gagal — {label}: {e}", exc_info=True)
+        logger.critical(
+            f"[Startup] FATAL — {label} gagal: {e}. Server tidak dapat berjalan.",
+            exc_info=True,
+        )
+        sys.exit(1)
 
 
-async def _safe_startup_async(label: str, fn) -> None:
+def _optional_startup(label: str, fn) -> None:
+    logger.info(f"[Startup] {label}...")
+    try:
+        fn()
+    except Exception as e:
+        logger.warning(
+            f"[Startup] {label} gagal: {e}. Service berjalan tanpa fitur ini.",
+            exc_info=True,
+        )
+
+
+async def _optional_startup_async(label: str, fn) -> None:
+    """Versi async dari _optional_startup."""
     logger.info(f"[Startup] {label}...")
     try:
         await fn()
     except Exception as e:
-        logger.error(
-            f"[Startup] Gagal — {label}: {e}. "
-            "Service tetap berjalan tanpa fitur ini.",
+        logger.warning(
+            f"[Startup] {label} gagal: {e}. Service berjalan tanpa fitur ini.",
             exc_info=True,
         )
 
@@ -111,10 +129,15 @@ async def _run_startup() -> None:
         logger.info("  Platform: Windows — WindowsProactorEventLoopPolicy aktif.")
     logger.info("=" * 60)
 
-    _safe_startup("Memuat API keys",   _load_api_keys)
-    _safe_startup("Memuat ONNX model", _load_onnx_model)
-    _safe_startup("Memuat CLIP model", _load_clip_model)
-    await _safe_startup_async("Memulai rate limiter cleanup task", _start_rate_limiter)
+    # FIX #5: API keys dan ONNX model adalah CRITICAL — server exit jika gagal.
+    _critical_startup("Memuat API keys",   _load_api_keys)
+    _critical_startup("Memuat ONNX model", _load_onnx_model)
+
+    # CLIP adalah OPTIONAL — fail-open, server tetap berjalan.
+    _optional_startup("Memuat CLIP model", _load_clip_model)
+
+    # Rate limiter cleanup task adalah OPTIONAL — ada fallback di check().
+    await _optional_startup_async("Memulai rate limiter cleanup task", _start_rate_limiter)
 
     logger.info(
         f"[Startup] Config: classes={settings.num_classes} "
@@ -274,9 +297,9 @@ def create_app() -> FastAPI:
             "status":        "operational",
             "docs":          "/docs" if settings.DEBUG else "disabled (production)",
             "endpoints": {
-                "predict":            "POST /api/v1/predict",
-                "health":             "GET /api/v1/health",
-                "ping":               "GET /api/v1/ping",
+                "predict": "POST /api/v1/predict",
+                "health":  "GET /api/v1/health",
+                "ping":    "GET /api/v1/ping",
             },
             "auth_required": True,
             "auth_header":   "X-API-Key",

@@ -1,3 +1,6 @@
+# core/logger.py
+
+import json
 import logging
 import sys
 from datetime import datetime, timezone
@@ -11,12 +14,12 @@ class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         log_entry: dict[str, Any] = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-            "module": record.module,
-            "function": record.funcName,
-            "line": record.lineno,
+            "level":     record.levelname,
+            "logger":    record.name,
+            "message":   record.getMessage(),
+            "module":    record.module,
+            "function":  record.funcName,
+            "line":      record.lineno,
         }
 
         if record.exc_info and record.exc_info[0] is not None:
@@ -25,20 +28,8 @@ class JSONFormatter(logging.Formatter):
         if hasattr(record, "extra_data"):
             log_entry["extra"] = record.extra_data
 
-        parts = []
-        for key, value in log_entry.items():
-            if isinstance(value, str):
-                escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-                parts.append(f'"{key}": "{escaped}"')
-            elif isinstance(value, (int, float)):
-                parts.append(f'"{key}": {value}')
-            elif value is None:
-                parts.append(f'"{key}": null')
-            else:
-                escaped = str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-                parts.append(f'"{key}": "{escaped}"')
-
-        return "{" + ", ".join(parts) + "}"
+        # json.dumps handles all escaping — unicode, \n, \t, nested dicts, etc.
+        return json.dumps(log_entry, ensure_ascii=False)
 
 
 def setup_logging() -> None:
@@ -46,7 +37,6 @@ def setup_logging() -> None:
 
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
-
     root_logger.handlers.clear()
 
     handler = logging.StreamHandler(sys.stdout)

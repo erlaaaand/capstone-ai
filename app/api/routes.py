@@ -10,8 +10,12 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, Resp
 
 from app.core_dependencies import AuthResult, require_scope, verify_api_key
 from core.config import settings
-from core.exceptions import DurianServiceException, InvalidImageException
-from core.file_validator import validate_upload  # ← single source, tidak ada duplikasi
+from core.exceptions import (
+    DurianServiceException,
+    InvalidImageException,
+    UnsupportedFileTypeException,  # FIX #1: top-level import, tidak lagi lazy di dalam try block
+)
+from core.file_validator import validate_upload
 from core.logger import get_logger
 from core.security import KeyScope
 from schemas.request import PredictionRequestBase64
@@ -98,8 +102,8 @@ async def predict_durian(
                     payload.filename.rsplit(".", 1)[-1].lower()
                     if "." in payload.filename else ""
                 )
+                # FIX #1: UnsupportedFileTypeException sudah di-import di atas
                 if ext and ext not in settings.allowed_extensions_set:
-                    from core.exceptions import UnsupportedFileTypeException
                     raise UnsupportedFileTypeException(
                         detail=(
                             f"Format '.{ext}' tidak didukung. "

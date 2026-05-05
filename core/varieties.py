@@ -2,7 +2,7 @@
 # Single source of truth untuk data varietas durian.
 # Import dari sini — JANGAN mendefinisikan ulang di core/config.py.
 
-from typing import Dict, NamedTuple, Optional
+from typing import Dict, NamedTuple  # Optional dihapus — tidak dipakai
 
 
 class VarietyInfo(NamedTuple):

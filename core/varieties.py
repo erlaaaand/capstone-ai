@@ -51,22 +51,6 @@ VARIETY_MAP: Dict[str, VarietyInfo] = {
             "di bagian bawah dan duri berbentuk piramida."
         ),
     ),
-    "D200": VarietyInfo(
-        display_name="Black Thorn",
-        local_name="D200 / Ochee / Duri Hitam / Black Thorn",
-        origin="Malaysia (Penang)",
-        description=(
-            "Durian super premium dengan daging oranye kemerahan dan rasa manis-pahit "
-            "yang sangat pekat. Ciri khas luarnya bentuknya membulat dengan garis lekukan "
-            "di bagian bawah dan ujung duri berwarna kehitaman."
-        ),
-    ),
-    "local": VarietyInfo(
-        display_name="Durian Lokal",
-        local_name="Local / Durian Lokal",
-        origin="Indonesia",
-        description="Durian asli dari Indonesia dengan ciri khas dan rasa yang unik.",
-    ),
 }
 
 _UNKNOWN_VARIETY = VarietyInfo(

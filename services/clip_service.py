@@ -22,7 +22,6 @@ class CLIPService:
 
     @classmethod
     def _ensure_loaded(cls) -> bool:
-        # Fast path — sudah dicoba load sebelumnya.
         if cls._load_attempted:
             return cls._model is not None
 
@@ -75,8 +74,6 @@ class CLIPService:
             return True
 
         non_durian_threshold = settings.CLIP_NON_DURIAN_THRESHOLD
-        # FIX #15: ambil min confidence dari settings (default 0.20).
-        # Cegah gambar ambigu (semua label confidence rendah) lolos tanpa syarat.
         durian_min_confidence = settings.CLIP_DURIAN_MIN_CONFIDENCE
 
         try:
@@ -100,7 +97,6 @@ class CLIPService:
             best_score = float(probs[best_idx])
             durian_score = float(probs[DURIAN_LABEL_INDEX])
 
-            # Kasus 1: label lain menang dengan confidence tinggi → tolak
             if best_idx != DURIAN_LABEL_INDEX and best_score > non_durian_threshold:
                 logger.warning(
                     f"[CLIPService] Bukan durian — terdeteksi sebagai "
@@ -108,8 +104,6 @@ class CLIPService:
                 )
                 return False
 
-            # FIX #15 — Kasus 2: label durian menang tapi confidence-nya terlalu rendah
-            # (misal: gambar kabur / ambigu yang semua labelnya rendah) → tolak
             if durian_score < durian_min_confidence:
                 logger.warning(
                     f"[CLIPService] Confidence durian terlalu rendah "

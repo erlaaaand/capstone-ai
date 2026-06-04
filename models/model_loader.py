@@ -95,7 +95,7 @@ class ONNXModelLoader:
             )
 
             inp_meta  = self._session.get_inputs()[0]
-            out_meta  = self._session.get_outputs()[0]
+            out_meta  = self._session.get_outputs()[-1]
             self._input_name  = inp_meta.name
             self._output_name = out_meta.name
 

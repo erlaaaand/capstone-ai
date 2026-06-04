@@ -32,8 +32,8 @@ class Settings(BaseSettings):
 
     # ── Model ─────────────────────────────────────────────────────────────
     MODEL_PATH:  str = "models/weights/efficientnet_b0.onnx"
-    CLASS_NAMES: str = "D13,D197,D2,D200,D24"
-    IMAGE_SIZE:  int = 224
+    CLASS_NAMES: str = "D13,D197,D2,D24"
+    IMAGE_SIZE:  int = 480
 
     # ── Image Processing ──────────────────────────────────────────────────
     ENABLE_ENHANCEMENT:   bool  = True

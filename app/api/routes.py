@@ -13,7 +13,7 @@ from core.config import settings
 from core.exceptions import (
     DurianServiceException,
     InvalidImageException,
-    UnsupportedFileTypeException,  # FIX #1: top-level import, tidak lagi lazy di dalam try block
+    UnsupportedFileTypeException,
 )
 from core.file_validator import validate_upload
 from core.logger import get_logger
@@ -119,18 +119,13 @@ async def predict_durian(
         clip_task    = asyncio.to_thread(CLIPService.is_durian, raw_input)
         process_task = asyncio.to_thread(ImageProcessor.process, raw_input)
 
-        is_valid_durian, (tensor, enhanced, preproc_ms) = await asyncio.gather(
+        (is_valid_durian, reject_reason), (tensor, enhanced, preproc_ms) = await asyncio.gather(
             clip_task,
             process_task,
         )
 
         if not is_valid_durian:
-            raise InvalidImageException(
-                detail=(
-                    "Gambar ditolak. Sistem mendeteksi ini bukan gambar buah durian. "
-                    "Pastikan gambar menampilkan buah durian utuh dengan jelas."
-                )
-            )
+            raise InvalidImageException(detail=reject_reason)
 
         pred_response = await asyncio.to_thread(
             InferenceService.predict, tensor, enhanced, preproc_ms

@@ -3,7 +3,7 @@
 import base64
 import io
 import threading
-from typing import Union
+from typing import Union, Tuple
 
 from PIL import Image
 
@@ -66,12 +66,12 @@ class CLIPService:
         return cls._ensure_loaded()
 
     @staticmethod
-    def is_durian(raw_input: Union[bytes, str]) -> bool:
+    def is_durian(raw_input: Union[bytes, str]) -> Tuple[bool, str]:
         if not CLIPService._ensure_loaded():
             logger.warning(
                 "[CLIPService] Model tidak tersedia — gambar diizinkan tanpa validasi CLIP."
             )
-            return True
+            return True, "Valid"
 
         non_durian_threshold = settings.CLIP_NON_DURIAN_THRESHOLD
         durian_min_confidence = settings.CLIP_DURIAN_MIN_CONFIDENCE
@@ -102,18 +102,21 @@ class CLIPService:
                     f"[CLIPService] Bukan durian — terdeteksi sebagai "
                     f"'{LABEL_NAMES[best_idx]}' (confidence={best_score:.2f})"
                 )
-                return False
+                
+                user_msg = f"Gambar ditolak. Sistem mendeteksi ini sebagai {LABEL_NAMES[best_idx]}. Harap unggah foto buah durian asli."
+                return False, user_msg
 
             if durian_score < durian_min_confidence:
                 logger.warning(
                     f"[CLIPService] Confidence durian terlalu rendah "
                     f"(score={durian_score:.2f} < min={durian_min_confidence:.2f}) — ditolak."
                 )
-                return False
+                
+                user_msg = "Sistem ragu ini gambar durian karena kurang jelas. Harap pastikan foto tidak blur dan fokus pada buah."
+                return False, user_msg
 
-            return True
+            return True, "Valid"
 
         except Exception as exc:
-            # Fail-open: jika error saat inferensi, izinkan gambar lanjut ke ONNX.
             logger.error(f"[CLIPService] Error saat inferensi: {exc}", exc_info=True)
-            return True
+            return True, "Valid"

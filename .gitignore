@@ -5,6 +5,8 @@ env/
 
 ai/
 
+hf_cache
+
 data/raw/
 data/processed/
 *.zip

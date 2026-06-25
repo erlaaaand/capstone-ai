@@ -49,8 +49,6 @@ class Settings(BaseSettings):
     CLIP_MODEL_ID:             str   = "openai/clip-vit-base-patch32"
     CLIP_REVISION_HASH:        str   = ""
     CLIP_NON_DURIAN_THRESHOLD: float = 0.40
-    # Minimum confidence untuk label Durian agar lolos validasi CLIP.
-    # Cegah gambar dengan semua confidence rendah (misal 13% durian) tetap lolos.
     CLIP_DURIAN_MIN_CONFIDENCE: float = 0.20
 
     # ── Security ──────────────────────────────────────────────────────────
@@ -65,7 +63,7 @@ class Settings(BaseSettings):
     API_SUPPORT_NAME:  str = "Durian API Support"
 
     # ── Network ───────────────────────────────────────────────────────────
-    CORS_ORIGINS_STR:  str = "http://localhost:3000,http://localhost:8080"
+    CORS_ORIGINS_STR:  str = "*"
     ALLOWED_HOSTS_STR: str = "*"
 
     API_KEY_REQUIRED: bool = True
@@ -177,13 +175,12 @@ class Settings(BaseSettings):
         rev = self.CLIP_REVISION_HASH.strip()
         return rev if rev else None
 
+
 @lru_cache()
 def get_settings() -> Settings:
     return Settings()
 
-
 def reload_settings() -> Settings:
-
     get_settings.cache_clear()
     return get_settings()
 
